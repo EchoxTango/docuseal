@@ -4,6 +4,8 @@ module.exports = {
   ...baseConfigs,
   content: [
     './app/javascript/submission_form/**/*.vue',
+    './app/views/submissions/**/*.erb',
+    './app/views/icons/**/*.erb',
     './app/views/submit_form/**/*.erb',
     './app/views/start_form/**/*.erb',
     './app/views/shared/_html_modal.html.erb',

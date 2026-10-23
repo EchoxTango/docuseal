@@ -115,7 +115,8 @@ export default {
         payment: this.t('payment'),
         phone: this.t('phone'),
         verification: this.t('verify_id'),
-        kba: this.t('kba')
+        kba: this.t('kba'),
+        qes: this.t('qes')
       }
     },
     fieldLabels () {
@@ -136,7 +137,8 @@ export default {
         payment: this.t('payment_field'),
         phone: this.t('phone_field'),
         verification: this.t('verify_id'),
-        kba: this.t('kba')
+        kba: this.t('kba'),
+        qes: this.t('qes')
       }
     },
     fieldIcons () {
@@ -160,7 +162,8 @@ export default {
         payment: IconCreditCard,
         phone: IconPhoneCheck,
         verification: IconId,
-        kba: IconUserScan
+        kba: IconUserScan,
+        qes: IconWritingSign
       }
     },
     skipTypes () {

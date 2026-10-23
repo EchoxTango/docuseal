@@ -180,6 +180,9 @@ Rails.application.routes.draw do
     resources :upload, only: %i[create], controller: 'submit_form_upload'
     resources :prefill_attachments, only: %i[create], controller: 'submit_form_prefill_attachments'
     resources :debug, only: %i[index], controller: 'submissions_debug' if Rails.env.development?
+    resources :qes_sessions, only: %i[create show], controller: 'qes/form_sessions' do
+      post :cancel, on: :member
+    end
     get :completed
     get :delegated
   end

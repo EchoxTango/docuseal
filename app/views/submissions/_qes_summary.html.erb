@@ -1,0 +1,61 @@
+<%# Metadata QES podpisu (SPEC § 13): kdo podepsal, čím, úroveň, platnost, pečeť. %>
+<%# `compact: true` je zkrácená varianta pro malé pole v dokumentu; plná je v kartě. %>
+<% report = session.validation_report || {} %>
+<% info = session.certificate_info || {} %>
+<% intact = report['intact'] == true %>
+<% compact = local_assigns.fetch(:compact, false) %>
+<% submission = session.submission %>
+<% timezone = submission.account.timezone %>
+<% locale = submission.account.locale %>
+<div class="<%= compact ? 'space-y-0.5 bg-base-200/80 rounded p-1 overflow-hidden' : 'space-y-1' %>" data-qes-summary="<%= session.id %>">
+  <div class="flex items-center space-x-1 font-medium">
+    <%= svg_icon(intact ? 'circle_check' : 'x_circle',
+                 class: "w-5 h-5 #{intact ? 'text-green-500' : 'text-red-500'}") %>
+    <span><%= t(intact ? 'qes.summary.valid' : 'qes.summary.invalid') %></span>
+    <span class="badge badge-sm"><%= session.level.to_s.upcase %></span>
+  </div>
+
+  <div class="flex items-center space-x-1">
+    <%= svg_icon('user', class: 'w-4 h-4') %>
+    <span><%= session.submitter.name %></span>
+  </div>
+
+  <div class="flex items-center space-x-1">
+    <%= svg_icon('certificate', class: 'w-4 h-4') %>
+    <span dir="auto"><%= info['subject'] %></span>
+  </div>
+
+  <% unless compact %>
+  <div class="text-xs opacity-60" dir="auto">
+    <%= t('qes.audit.certificate_issuer') %>: <%= info['issuer'] %>
+    · <%= t('qes.audit.certificate_serial') %>: <%= info['serial'] %>
+  </div>
+
+  <div class="text-xs opacity-60">
+    <%= t('qes.audit.key_location') %>: <%= session.key_location %>
+    <% if session.completed_at %>
+      · <%= t('qes.audit.signed_at') %>:
+      <%= l(session.completed_at.in_time_zone(timezone), format: :long, locale: locale) %>
+    <% end %>
+  </div>
+
+  <div class="text-xs opacity-60">
+    <%= t('qes.audit.validation') %>:
+    <% validation_parts = [] %>
+    <% validation_parts << t('qes.audit.valid') if report['intact'] %>
+    <% validation_parts << t('qes.audit.trusted') if report['trusted'] %>
+    <% validation_parts << t('qes.audit.coverage', coverage: report['coverage']) if report['coverage'].present? %>
+    <%= validation_parts.presence&.join(' · ') || t('qes.summary.unverified') %>
+    · <%= t('qes.audit.seal') %>:
+    <%= t("qes.summary.seal_#{session.seal_state}", default: session.seal_state) %>
+  </div>
+
+  <% if submission.audit_trail.present? %>
+    <div>
+      <a class="link text-xs" target="_blank" href="<%= ActiveStorage::Blob.proxy_path(submission.audit_trail.blob, expires_at: 4.hours.from_now) %>">
+        <%= t('audit_log') %> ↗
+      </a>
+    </div>
+  <% end %>
+  <% end %>
+</div>

@@ -511,6 +511,20 @@
             @start="scrollIntoField(currentField)"
             @minimize="minimizeForm"
           />
+          <QesStep
+            v-else-if="currentField.type === 'qes'"
+            ref="currentStep"
+            :key="currentField.uuid"
+            v-model="values[currentField.uuid]"
+            :field="currentField"
+            :submitter="submitter"
+            :submitter-slug="submitterSlug"
+            :show-field-names="showFieldNames"
+            :dry-run="dryRun"
+            :native-platform="nativePlatform"
+            @start="scrollIntoField(currentField)"
+            @submit="!isSubmitting && submitStep()"
+          />
           <InitialsStep
             v-else-if="currentField.type === 'initials'"
             ref="currentStep"
@@ -696,6 +710,7 @@ import FormulaFieldAreas from './formula_areas'
 import AccessibilityAreas from './accessibility_areas'
 import ImageStep from './image_step'
 import SignatureStep from './signature_step'
+import QesStep from './qes_step'
 import InitialsStep from './initials_step'
 import AttachmentStep from './attachment_step'
 import MultiSelectStep from './multi_select_step'
@@ -755,6 +770,7 @@ export default {
     AccessibilityAreas,
     ImageStep,
     SignatureStep,
+    QesStep,
     AppearsOn,
     IconWritingSign,
     AttachmentStep,

@@ -205,6 +205,16 @@
       </div>
     </div>
     <div
+      v-else-if="field.type === 'qes'"
+      class="w-full h-full overflow-hidden"
+    >
+      <QesSummary
+        v-if="modelValue"
+        :value="modelValue"
+        :submitter-slug="submitter.slug"
+      />
+    </div>
+    <div
       v-else
       ref="textContainer"
       dir="auto"
@@ -287,6 +297,7 @@
 
 <script>
 import MarkdownContent from './markdown_content'
+import QesSummary from './qes_summary'
 import { IconTextSize, IconWritingSign, IconCalendarEvent, IconPhoto, IconCheckbox, IconPaperclip, IconSelect, IconCircleDot, IconChecks, IconCheck, IconColumns3, IconPhoneCheck, IconLetterCaseUpper, IconCreditCard, IconRubberStamp, IconSquareNumber1, IconId, IconUserScan } from '@tabler/icons-vue'
 
 export default {
@@ -294,7 +305,8 @@ export default {
   components: {
     IconPaperclip,
     MarkdownContent,
-    IconCheck
+    IconCheck,
+    QesSummary
   },
   inject: ['t'],
   props: {
