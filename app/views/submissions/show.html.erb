@@ -289,6 +289,14 @@
                   <% end %>
                 </span>
               </div>
+              <% qes_session = submitter&.qes_sessions&.completed&.order(:id)&.last %>
+              <% if qes_session %>
+                <div class="flex items-center space-x-1 mt-1 text-sm">
+                  <%= svg_icon(qes_session.validation_report&.dig('intact') ? 'circle_check' : 'x_circle',
+                               class: "w-5 h-5 #{qes_session.validation_report&.dig('intact') ? 'text-green-500' : 'text-red-500'}") %>
+                  <span><%= t('qes.summary.signed_with_certificate', level: qes_session.level.to_s.upcase) %></span>
+                </div>
+              <% end %>
               <% if submitter&.declined_at? %>
                 <div class="flex items-center space-x-1 mt-1">
                   <span>
@@ -350,6 +358,9 @@
                         </a>
                       <% end %>
                     </div>
+                  <% elsif field['type'] == 'qes' %>
+                    <% qes_session = QesSession.completed_for(submitter, field['uuid']) %>
+                    <%= render 'submissions/qes_summary', session: qes_session if qes_session %>
                   <% elsif field['type'] == 'checkbox' %>
                     <%= svg_icon('check', class: 'w-6 h-6') %>
                   <% else %>

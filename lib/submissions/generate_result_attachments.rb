@@ -85,6 +85,8 @@ module Submissions
     def call(submitter)
       return generate_detached_signature_attachments(submitter) if detached_signature?(submitter)
 
+      return Qes::ResultAttachments.call(submitter) if submitter.qes_sessions.completed.exists?
+
       pdfs_index = generate_pdfs(submitter)
 
       account = submitter.account
@@ -137,7 +139,7 @@ module Submissions
       end
     end
 
-    def generate_pdfs(submitter)
+    def generate_pdfs(submitter, base: nil, page_offsets: {})
       configs = submitter.account.account_configs.where(key: [AccountConfig::FLATTEN_RESULT_PDF_KEY,
                                                               AccountConfig::WITH_SIGNATURE_ID,
                                                               AccountConfig::WITH_FILE_LINKS_KEY,
@@ -160,8 +162,15 @@ module Submissions
 
       file_links_expire_at = Accounts.link_expires_at(submitter.account) if with_file_links
 
-      pdfs_index = build_pdfs_index(submitter.submission, submitter:, flatten: is_flatten,
-                                                          incremental: is_rotate_incremental)
+      pdfs_index =
+        if base
+          Qes.template_schema(submitter.submission).each_with_object({}) do |item, acc|
+            acc[item['attachment_uuid']] = base
+          end
+        else
+          build_pdfs_index(submitter.submission, submitter:, flatten: is_flatten,
+                                                              incremental: is_rotate_incremental)
+        end
 
       if with_signature_id || submitter.account.testing?
         pdfs_index.each_value do |pdf|
@@ -203,20 +212,24 @@ module Submissions
         end
       end
 
-      fill_submitter_fields(submitter, submitter.account, pdfs_index, with_signature_id:, is_flatten:,
-                                                                      with_submitter_timezone:,
-                                                                      with_file_links:,
-                                                                      with_timestamp_seconds:,
-                                                                      with_signature_id_reason:,
-                                                                      with_signature_id_completed_at:,
-                                                                      file_links_expire_at:)
+      fill_submitter_fields(submitter, submitter.account, pdfs_index, with_signature_id:,
+                                                              is_flatten: base ? false : is_flatten,
+                                                              with_headings: base ? false : nil,
+                                                              with_submitter_timezone:,
+                                                              with_file_links:,
+                                                              with_timestamp_seconds:,
+                                                              with_signature_id_reason:,
+                                                              with_signature_id_completed_at:,
+                                                              file_links_expire_at:,
+                                                              page_offsets:)
     end
 
     def fill_submitter_fields(submitter, account, pdfs_index, with_signature_id:, is_flatten:, with_headings: nil,
                               with_submitter_timezone: false, with_signature_id_reason: true,
                               with_timestamp_seconds: false, with_signature_id_completed_at: false,
                               with_file_links: nil,
-                              file_links_expire_at: Accounts.link_expires_at(account))
+                              file_links_expire_at: Accounts.link_expires_at(account),
+                              page_offsets: {})
       cell_layouters = Hash.new do |hash, valign|
         hash[valign] = HexaPDF::Layout::TextLayouter.new(text_valign: valign.to_sym, text_align: :center)
       end
@@ -230,6 +243,8 @@ module Submissions
       locale = submitter.metadata.fetch('lang', account.locale)
 
       (submission.template_fields || submission.template.fields).each do |field|
+        next if field['type'] == 'qes'
+
         next if !with_headings &&
                 (field['type'] == 'heading' || (field['type'] == 'strikethrough' && field['conditions'].blank?))
 
@@ -241,7 +256,7 @@ module Submissions
 
           next if pdf.nil?
 
-          page = pdf.pages[area['page']]
+          page = pdf.pages[area['page'] + page_offsets.fetch(area['attachment_uuid'], 0)]
 
           next if page.nil?
 
@@ -1017,7 +1032,8 @@ module Submissions
 
     def single_sign_reason(submitter)
       signers = submitter.submission.submitters.reject(&:viewer?)
-                         .sort_by(&:completed_at).map { |s| s.email || s.name || s.phone }
+                         .sort_by { |s| s.completed_at || Time.current }
+                         .map { |s| s.email || s.name || s.phone }
 
       format(SIGN_REASON, name: signers.reverse.join(', '))
     end

@@ -159,6 +159,8 @@ module Submitters
     end
 
     def validate_values!(values, submitter, params, request)
+      Qes::ValueValidator.call(values, submitter)
+
       values.each do |key, value|
         field = submitter.submission.template_fields.find { |e| e['uuid'] == key }
 

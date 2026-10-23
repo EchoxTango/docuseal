@@ -63,6 +63,8 @@ class Submission < ApplicationRecord
   attribute :source, :string, default: 'link'
   attribute :submitters_order, :string, default: 'random'
 
+  before_validation :maybe_preserve_qes_order, on: :create
+
   attribute :slug, :string, default: -> { SecureRandom.base58(14) }
 
   has_one_attached :audit_trail
@@ -186,5 +188,14 @@ class Submission < ApplicationRecord
     return if combined_document.blank?
 
     ActiveStorage::Blob.proxy_url(combined_document.blob, expires_at:)
+  end
+
+  private
+
+  # QES řetězení podpisů vyžaduje striktní pořadí (SPEC § 4.6).
+  def maybe_preserve_qes_order
+    return if template.blank? || template.fields.none? { |field| field['type'] == 'qes' }
+
+    self.submitters_order = :preserved
   end
 end

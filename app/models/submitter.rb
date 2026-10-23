@@ -45,6 +45,7 @@ class Submitter < ApplicationRecord
   has_one :template, through: :submission
   has_one :search_entry, as: :record, inverse_of: :record, dependent: :destroy if SearchEntry.table_exists?
   has_many :submitter_versions, dependent: :destroy
+  has_many :qes_sessions, dependent: :destroy
 
   attribute :values, :string, default: -> { {} }
   attribute :preferences, :string, default: -> { {} }
@@ -111,7 +112,7 @@ class Submitter < ApplicationRecord
   def with_signature_fields?
     @with_signature_fields ||= begin
       fields = submission.template_fields || template.fields
-      signature_field_types = %w[signature initials]
+      signature_field_types = %w[signature initials qes]
       fields.any? { |f| f['submitter_uuid'] == uuid && signature_field_types.include?(f['type']) }
     end
   end
