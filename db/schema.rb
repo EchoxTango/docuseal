@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_30_061927) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_22_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "btree_gin"
   enable_extension "pg_catalog.plpgsql"
@@ -333,6 +333,48 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_30_061927) do
     t.index ["key", "version"], name: "index_otp_challenges_on_key_and_version", unique: true
   end
 
+  create_table "qes_sessions", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.text "app_metadata"
+    t.datetime "app_opened_at"
+    t.text "certificate_chain"
+    t.text "certificate_info"
+    t.datetime "completed_at"
+    t.datetime "created_at", null: false
+    t.string "doc_timestamp_state", default: "none", null: false
+    t.string "document_digest"
+    t.datetime "embedded_at"
+    t.datetime "expires_at"
+    t.datetime "failed_at"
+    t.string "failure_code"
+    t.string "failure_message"
+    t.string "field_uuid", null: false
+    t.string "final_pdf_sha256"
+    t.string "hash_algorithm", default: "sha256", null: false
+    t.string "key_location"
+    t.string "level"
+    t.datetime "prepared_at"
+    t.string "provider", default: "mobile_app", null: false
+    t.string "seal_state", default: "none", null: false
+    t.binary "signature"
+    t.string "signature_algorithm", default: "rsa_pkcs1v15", null: false
+    t.datetime "signed_at"
+    t.binary "signed_attrs_der"
+    t.string "signed_pdf_sha256"
+    t.string "state", default: "created", null: false
+    t.bigint "submission_id", null: false
+    t.bigint "submitter_id", null: false
+    t.string "token_digest"
+    t.datetime "updated_at", null: false
+    t.datetime "validated_at"
+    t.text "validation_report"
+    t.index ["account_id"], name: "index_qes_sessions_on_account_id"
+    t.index ["expires_at"], name: "index_qes_sessions_on_expires_at"
+    t.index ["submission_id"], name: "index_qes_sessions_on_submission_id"
+    t.index ["submitter_id", "state"], name: "index_qes_sessions_on_submitter_id_and_state"
+    t.index ["token_digest"], name: "index_qes_sessions_on_token_digest", unique: true
+  end
+
   create_table "search_entries", force: :cascade do |t|
     t.bigint "account_id", null: false
     t.datetime "created_at", null: false
@@ -613,6 +655,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_30_061927) do
   add_foreign_key "oauth_access_grants", "users", column: "resource_owner_id"
   add_foreign_key "oauth_access_tokens", "oauth_applications", column: "application_id"
   add_foreign_key "oauth_access_tokens", "users", column: "resource_owner_id"
+  add_foreign_key "qes_sessions", "accounts"
+  add_foreign_key "qes_sessions", "submissions"
+  add_foreign_key "qes_sessions", "submitters"
   add_foreign_key "submission_events", "accounts"
   add_foreign_key "submission_events", "submissions"
   add_foreign_key "submission_events", "submitters"
