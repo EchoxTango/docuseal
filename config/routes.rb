@@ -148,6 +148,21 @@ Rails.application.routes.draw do
   resource :submit_form_email_2fa, only: %i[create update]
   resources :start_form_email_2fa_send, only: :create
 
+  namespace :qes do
+    resources :sessions, only: %i[show], param: :token, path: 'sessions' do
+      member do
+        post :certificate
+        post :complete
+        post :abort
+      end
+    end
+    get 'sign', to: 'app#show'
+    get 'app', to: 'app#show'
+  end
+
+  get '.well-known/apple-app-site-association', to: 'qes/well_known#apple_app_site_association'
+  get '.well-known/assetlinks.json', to: 'qes/well_known#assetlinks'
+
   resources :submit_form, only: %i[], path: '' do
     get :success, on: :collection
   end

@@ -1170,6 +1170,111 @@ en: &en
       long: "%B %-d, %Y at %-I:%M %p"
       detailed: "%B %-d, %Y at %-I:%M:%S %p"
 
+  qes: QES
+  qes_field: Certificate signature (QES)
+
+  qes:
+    step:
+      open_app: Open the app
+      expires_in: Link expires in %{minutes} min
+    error:
+      unknown_token: Invalid link. Request a new one.
+      expired_token: The link has expired. Request a new one.
+      used_token: The signature has already been completed.
+      wrong_state: The request is not in a valid state. Reload the page.
+      signature_invalid: The signature could not be verified. Try again.
+      qes_required_qscd: A qualified certificate (QES) is required.
+      level_mismatch: The selected certificate does not match the signature type.
+      not_qualified: The certificate is not qualified. Use a certificate from I.CA/PostSignum.
+      not_trusted: The certificate is not trusted. Use a certificate from a trusted CA (I.CA/PostSignum).
+      revoked: The certificate has been revoked.
+      invalid_certificate: The certificate could not be read. Check it and try again.
+      certificate_expired: The certificate has expired. Import a new one.
+      unsupported_key: The certificate uses an unsupported key.
+      rate_limited: Too many requests. Try again later.
+      unknown_field: Unknown field.
+      wrong_field_type: The field does not support certificate signing.
+      form_not_active: The form is no longer active.
+      unknown_session: Unknown signing session.
+      unauthorized: Unauthorized request.
+      signature_size_exceeded: The signature does not fit into the reserved space.
+      signing_context_mismatch: The signed attributes do not match.
+      ltv_unavailable: Revocation information is not available.
+      validation_failed: The signature could not be validated.
+      prepare_failed: The signing session could not be prepared.
+      network: Connection error. Try again.
+      invalid_pdf: The file is not a valid PDF.
+      encrypted_pdf: Encrypted PDF files are not supported.
+      already_signed: PDF files that are already signed are not supported.
+      file_too_large: The PDF file is too large.
+      invalid_level: Unsupported signature level.
+    app:
+      confirm_title: Confirm signature
+      confirm_signer: 'Signer: %{name}'
+      confirm_document: 'Document: %{document_name}'
+    audit:
+      title: Qualified electronic signature (QES/AdES)
+      field: Field
+      certificate_subject: Certificate subject
+      certificate_issuer: Certificate issuer
+      certificate_serial: Certificate serial number
+      level: Level
+      key_location: Key location
+      signed_at: Signed at
+      document_digest: Document digest
+      signed_pdf_sha256: Signed PDF SHA-256
+      final_pdf_sha256: Final PDF SHA-256
+      validation: Validation
+      valid: valid
+      trusted: trusted
+      coverage: 'coverage: %{coverage}'
+      seal: DocuSeal seal
+      protocol: Protocol version
+    stamp:
+      title: Digitally signed
+    summary:
+      valid: Signature is valid
+      invalid: Signature is invalid
+      unverified: no validation data
+      signed_with_certificate: 'Signed with certificate (%{level})'
+      seal_applied: applied
+      seal_failed: failed
+      seal_none: not applied
+    verification:
+      title: PDF verification
+      subtitle: Verified by the DocuSeal server against the configured trust roots.
+      preview: Preview PDF
+      preview_title: PDF preview
+      download: Download PDF
+      signatures: Signatures
+      signature_trusted: trusted
+      signature_untrusted: untrusted
+      seal_verified: verified
+      seal_unverified: unverified
+      validated_at: Verified at
+      stored_at: Stored at
+      revocation: Revocation
+      revocation_not_checked: not checked
+      coverage: 'coverage: %{coverage}'
+      details: Technical details
+      trusted_root: Trust root
+      file: File
+      origin:
+        docuseal: From DocuSeal
+        external: External PDF
+      names:
+        qes: Qualified signature
+        seal: DocuSeal seal
+        timestamp: Document timestamp
+        other: Signature
+      verdict:
+        valid: Signature is valid
+        valid_untrusted: Signature is valid, but the certificate is not trusted
+        valid_unqualified: PDF is signed, but not with a qualified signature
+        invalid: Signature is invalid
+        invalid_modified: PDF has been modified after signing
+        unsigned: PDF is not signed
+
 es: &es
   click_to_upload: Haz clic para cargar
   knowledge_based_authentication: Autenticación basada en el conocimiento
@@ -7369,6 +7474,106 @@ cs:
   rate_limit_exceeded: Překročen limit
   too_many_requests_try_again_later: Příliš mnoho požadavků. Zkuste to později.
 
+  qes:
+    step:
+      open_app: Otevřít aplikaci
+      expires_in: Odkaz vyprší za %{minutes} min
+    error:
+      unknown_token: Neplatný odkaz. Vyžádejte nový.
+      expired_token: Platnost odkazu vypršela. Vyžádejte nový.
+      used_token: Podpis už byl dokončen.
+      wrong_state: Požadavek není v platném stavu. Načtěte stránku znovu.
+      signature_invalid: Podpis se nepodařilo ověřit. Zkuste to znovu.
+      qes_required_qscd: Vyžaduje se kvalifikovaný certifikát (QES).
+      level_mismatch: Vybraný certifikát neodpovídá typu podpisu.
+      not_qualified: Certifikát není kvalifikovaný. Použijte certifikát od I.CA/PostSignum.
+      not_trusted: Certifikát není důvěryhodný. Použijte certifikát od důvěryhodné CA (I.CA/PostSignum).
+      revoked: Certifikát byl revokován.
+      invalid_certificate: Certifikát se nepodařilo načíst. Zkontrolujte ho a zkuste to znovu.
+      certificate_expired: Platnost certifikátu vypršela. Importujte nový.
+      unsupported_key: Certifikát používá nepodporovaný klíč.
+      rate_limited: Příliš mnoho požadavků. Zkuste to později.
+      unknown_field: Neznámé pole.
+      wrong_field_type: Pole nepodporuje podpis certifikátem.
+      form_not_active: Formulář už není aktivní.
+      unknown_session: Neznámá podpisová session.
+      unauthorized: Neautorizovaný požadavek.
+      signature_size_exceeded: Podpis se nevejde do rezervovaného místa.
+      signing_context_mismatch: Podepsané atributy se neshodují.
+      ltv_unavailable: Revokační informace nejsou dostupné.
+      validation_failed: Podpis se nepodařilo ověřit.
+      prepare_failed: Podpisovou session se nepodařilo připravit.
+      network: Chyba připojení. Zkuste to znovu.
+      invalid_pdf: Soubor není platné PDF.
+      encrypted_pdf: Šifrovaná PDF nejsou podporovaná.
+      already_signed: Už podepsaná PDF nejsou podporovaná.
+      file_too_large: PDF soubor je příliš velký.
+      invalid_level: Nepodporovaná úroveň podpisu.
+    app:
+    audit:
+      title: Kvalifikovaný elektronický podpis (QES/AdES)
+      field: Pole
+      certificate_subject: Předmět certifikátu
+      certificate_issuer: Vydavatel certifikátu
+      certificate_serial: Sériové číslo certifikátu
+      level: Úroveň
+      key_location: Umístění klíče
+      signed_at: Podepsáno
+      document_digest: Otisk dokumentu
+      signed_pdf_sha256: SHA-256 podepsaného PDF
+      final_pdf_sha256: SHA-256 finálního PDF
+      validation: Validace
+      valid: platný
+      trusted: důvěryhodný
+      coverage: 'pokrytí: %{coverage}'
+      seal: Pečeť DocuSealu
+      protocol: Verze protokolu
+    stamp:
+      title: Digitálně podepsáno
+    summary:
+      valid: Podpis je platný
+      invalid: Podpis je neplatný
+      unverified: bez údajů o validaci
+      signed_with_certificate: 'Podepsáno certifikátem (%{level})'
+      seal_applied: aplikována
+      seal_failed: selhala
+      seal_none: nepřidána
+    verification:
+      title: Ověření PDF
+      subtitle: Ověřeno serverem DocuSeal vůči nastaveným trust rootům.
+      preview: Náhled PDF
+      preview_title: Náhled PDF
+      download: Stáhnout PDF
+      signatures: Podpisy
+      signature_trusted: důvěryhodný
+      signature_untrusted: nedůvěryhodný
+      seal_verified: ověřena
+      seal_unverified: neověřena
+      validated_at: Ověřeno
+      stored_at: Uloženo
+      revocation: Revokace
+      revocation_not_checked: neověřena
+      coverage: 'pokrytí: %{coverage}'
+      details: Technické detaily
+      trusted_root: Trust root
+      file: Soubor
+      origin:
+        docuseal: Z DocuSealu
+        external: Externí PDF
+      names:
+        qes: Kvalifikovaný podpis
+        seal: Pečeť DocuSealu
+        timestamp: Časové razítko dokumentu
+        other: Podpis
+      verdict:
+        valid: Podpis je platný
+        valid_untrusted: Podpis je platný, ale certifikát není důvěryhodný
+        valid_unqualified: PDF je podepsané, ale ne kvalifikovaným podpisem
+        invalid: Podpis je neplatný
+        invalid_modified: PDF bylo po podpisu změněno
+        unsigned: PDF není podepsané
+
+  qes_field: Podpis certifikátem (QES)
 he:
   date:
     abbr_month_names:
