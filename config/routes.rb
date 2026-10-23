@@ -44,6 +44,7 @@ Rails.application.routes.draw do
       post :merge, on: :collection
       post :verify, on: :collection
     end
+    resources :qes_documents, only: %i[create], path: 'qes/documents'
     scope 'events' do
       resources :form_events, only: %i[index], path: 'form/:type'
       resources :submission_events, only: %i[index], path: 'submission/:type'
