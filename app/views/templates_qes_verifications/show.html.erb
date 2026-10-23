@@ -1,0 +1,8 @@
+<%= render 'shared/turbo_modal_large', title: t('qes.verification.preview_title') do %>
+  <div class="p-4">
+    <iframe src="<%= ActiveStorage::Blob.proxy_path(@document.blob, expires_at: 4.hours.from_now) %>"
+            title="<%= @template.name %>"
+            class="w-full rounded border border-base-300"
+            style="height: 70vh"></iframe>
+  </div>
+<% end %>

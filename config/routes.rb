@@ -45,6 +45,8 @@ Rails.application.routes.draw do
       post :verify, on: :collection
     end
     resources :qes_documents, only: %i[create], path: 'qes/documents'
+    resources :qes_verifications, only: %i[create], path: 'qes/verify'
+    post 'qes/verified_documents', to: 'qes_verifications#store'
     scope 'events' do
       resources :form_events, only: %i[index], path: 'form/:type'
       resources :submission_events, only: %i[index], path: 'submission/:type'
@@ -112,6 +114,7 @@ Rails.application.routes.draw do
     resources :submissions, only: %i[new create]
     resource :folder, only: %i[edit update], controller: 'templates_folders'
     resource :preview, only: %i[show], controller: 'templates_preview'
+    resource :qes_verification, only: %i[show], controller: 'templates_qes_verifications'
     resource :form, only: %i[show], controller: 'templates_form_preview'
     resource :code_modal, only: %i[show], controller: 'templates_code_modal'
     resource :preferences, only: %i[show create destroy], controller: 'templates_preferences'

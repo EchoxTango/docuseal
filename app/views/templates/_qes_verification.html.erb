@@ -1,0 +1,143 @@
+<%# Report ověření PDF (docs/16 § 4.6): čte se z `template.preferences['qes_verification']`. %>
+<% report = local_assigns[:report] %>
+<% template = local_assigns[:template] %>
+<% account = template.account %>
+<% timezone = account.timezone %>
+<% locale = account.locale %>
+<% verdict = report['verdict'].to_s %>
+<% verdict = 'invalid' unless %w[valid valid_untrusted valid_unqualified invalid unsigned].include?(verdict) %>
+<% verdict_key = verdict == 'invalid' && report['modified'] == true ? 'invalid_modified' : verdict %>
+<% colors = { 'valid' => 'text-green-500', 'valid_untrusted' => 'text-yellow-500',
+              'valid_unqualified' => 'text-yellow-500', 'invalid' => 'text-red-500',
+              'invalid_modified' => 'text-red-500', 'unsigned' => 'text-base-content/60' } %>
+<% icons = { 'valid' => 'circle_check', 'valid_untrusted' => 'alert_circle',
+             'valid_unqualified' => 'alert_circle', 'invalid' => 'x_circle',
+             'invalid_modified' => 'x_circle', 'unsigned' => 'file_text' } %>
+<% document = template.schema_documents.first %>
+<% seal = report['seal'] || {} %>
+<% signatures = Array(report['signatures']) %>
+<% format_time = ->(value) { l(Time.zone.parse(value).in_time_zone(timezone), format: :long, locale: locale) } %>
+<div class="card bg-base-200 mb-4">
+  <div class="card-body p-4 md:p-6">
+    <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+      <div>
+        <h2 class="text-2xl font-bold"><%= t('qes.verification.title') %></h2>
+        <p class="text-sm opacity-60"><%= t('qes.verification.subtitle') %></p>
+      </div>
+      <% if document %>
+        <div class="flex flex-wrap gap-2">
+          <open-modal-mobile class="flex">
+            <%= link_to template_qes_verification_path(template), class: 'white-button', data: { turbo_frame: :modal } do %>
+              <%= svg_icon('eye', class: 'w-5 h-5') %>
+              <span><%= t('qes.verification.preview') %></span>
+            <% end %>
+          </open-modal-mobile>
+          <%= link_to "#{ActiveStorage::Blob.proxy_path(document.blob, expires_at: 4.hours.from_now)}?disposition=attachment",
+                      id: 'qes_verification_download', class: 'white-button' do %>
+            <%= svg_icon('download', class: 'w-5 h-5') %>
+            <span><%= t('qes.verification.download') %></span>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2">
+      <%= svg_icon(icons[verdict], class: "w-6 h-6 #{colors[verdict]}") %>
+      <span class="text-xl font-semibold"><%= t("qes.verification.verdict.#{verdict_key}") %></span>
+      <% if report['level'].present? && report['level'] != 'none' %>
+        <span class="badge badge-outline"><%= report['level'].to_s.upcase %></span>
+      <% end %>
+      <% if report['origin'].present? %>
+        <span class="badge badge-outline"><%= t("qes.verification.origin.#{report['origin']}", default: report['origin']) %></span>
+      <% end %>
+      <% if report['coverage'].present? %>
+        <span class="badge badge-outline"><%= t('qes.verification.coverage', coverage: report['coverage']) %></span>
+      <% end %>
+    </div>
+
+    <div class="grid gap-x-6 gap-y-1 text-sm md:grid-cols-2">
+      <% if report['validated_at'].present? %>
+        <div><span class="opacity-60"><%= t('qes.verification.validated_at') %>:</span> <%= format_time.call(report['validated_at']) %></div>
+      <% end %>
+      <% if report['stored_at'].present? %>
+        <div><span class="opacity-60"><%= t('qes.verification.stored_at') %>:</span> <%= format_time.call(report['stored_at']) %></div>
+      <% end %>
+      <% if seal['present'] %>
+        <div>
+          <span class="opacity-60"><%= t('qes.audit.seal') %>:</span>
+          <%= t(seal['trusted'] ? 'qes.verification.seal_verified' : 'qes.verification.seal_unverified') %>
+        </div>
+      <% end %>
+      <% if report['revocation'].present? %>
+        <div>
+          <span class="opacity-60"><%= t('qes.verification.revocation') %>:</span>
+          <%= t("qes.verification.revocation_#{report['revocation']}", default: report['revocation']) %>
+        </div>
+      <% end %>
+    </div>
+
+    <% if signatures.present? %>
+      <div>
+        <h3 class="font-medium"><%= t('qes.verification.signatures') %></h3>
+        <div class="mt-1 space-y-2">
+          <% signatures.each do |signature| %>
+            <% kind = signature['kind'].to_s %>
+            <% intact = signature['intact'] == true %>
+            <% trusted = signature['trusted'] == true %>
+            <% name = signature['common_name'].presence || t("qes.verification.names.#{kind}", default: t('qes.verification.names.other')) %>
+            <div class="rounded border border-base-300 bg-base-100 p-2">
+              <div class="flex flex-wrap items-center gap-2">
+                <%= svg_icon(intact ? 'circle_check' : 'x_circle', class: "w-5 h-5 #{intact ? 'text-green-500' : 'text-red-500'}") %>
+                <span class="font-medium"><%= name %></span>
+                <% if signature['level'].present? && signature['level'] != 'none' %>
+                  <span class="badge badge-sm"><%= signature['level'].to_s.upcase %></span>
+                <% end %>
+                <% if kind == 'qes' %>
+                  <span class="badge badge-sm badge-outline"><%= t(trusted ? 'qes.verification.signature_trusted' : 'qes.verification.signature_untrusted') %></span>
+                <% elsif kind == 'seal' %>
+                  <span class="badge badge-sm badge-outline"><%= t(seal['trusted'] ? 'qes.verification.seal_verified' : 'qes.verification.seal_unverified') %></span>
+                <% end %>
+              </div>
+              <div class="mt-1 space-y-0.5 text-xs opacity-60">
+                <% if signature['issuer'].present? %>
+                  <div><%= t('qes.audit.certificate_issuer') %>: <span dir="auto"><%= signature['issuer'] %></span></div>
+                <% end %>
+                <% if signature['signing_time'].present? %>
+                  <div><%= t('qes.audit.signed_at') %>: <%= format_time.call(signature['signing_time']) %></div>
+                <% end %>
+              </div>
+            </div>
+          <% end %>
+        </div>
+      </div>
+    <% end %>
+
+    <details>
+      <summary class="link cursor-pointer text-sm"><%= t('qes.verification.details') %></summary>
+      <div class="mt-2 space-y-2 break-all text-xs opacity-70">
+        <% signatures.each do |signature| %>
+          <div>
+            <div class="font-medium" dir="auto"><%= signature['subject'].presence || signature['common_name'] %></div>
+            <div><%= t('qes.audit.certificate_serial') %>: <%= signature['serial'] %></div>
+            <% Array(signature['chain']).each do |certificate| %>
+              <div dir="auto"><%= certificate %></div>
+            <% end %>
+          </div>
+        <% end %>
+        <% Array(report['trusted_roots']).each do |root| %>
+          <div><%= t('qes.verification.trusted_root') %>: <span dir="auto"><%= root %></span></div>
+        <% end %>
+        <% Array(report['messages']).each do |message| %>
+          <div><%= message['text'] %></div>
+        <% end %>
+        <% if report['file'].present? %>
+          <div>
+            <%= t('qes.verification.file') %>: <%= report['file']['name'] %>
+            <% if report['file']['size'].present? %>· <%= number_to_human_size(report['file']['size']) %><% end %>
+            · SHA-256: <%= report['file']['sha256'] %>
+          </div>
+        <% end %>
+      </div>
+    </details>
+  </div>
+</div>

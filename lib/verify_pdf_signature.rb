@@ -4,7 +4,8 @@ module VerifyPdfSignature
   COMMON_NAME = 'CN'
   TIME_FORMAT = '%Y%m%d%H%M%S%z'
 
-  SignatureStruct = Struct.new(:messages, :reason, :signing_time, :common_name, :type)
+  SignatureStruct = Struct.new(:messages, :reason, :signing_time, :common_name, :type,
+                              :verified, :trusted, :modified)
   MessageStruct = Struct.new(:text, :status)
 
   module_function
@@ -18,13 +19,18 @@ module VerifyPdfSignature
 
         verified_signatures = signatures.select { |e| verified_signature?(e, io, trusted_certs) }
         trusted_signatures = verified_signatures.select { |e| trusted_signature?(e, trusted_certs) }
+        # Unsigned změny se počítají až za **posledním ověřeným** podpisem, ne za
+        # posledním důvěryhodným: DocTS (PAdES-LTA) je ověřený, ale nedůvěryhodný
+        # (TSA cert není certem účtu) a kryje celý dokument včetně DSS (SPEC § 7.6).
+        last_verified = verified_signatures.max_by(&:signed_end)
         last_signature = (trusted_signatures.presence || verified_signatures).max_by(&:signed_end)
-        has_unsigned_changes = last_signature && unsigned_changes?(document, io, last_signature.signed_end)
+        has_unsigned_changes = last_verified && unsigned_changes?(document, io, last_verified.signed_end)
 
         signatures.map do |signature|
           build_signature(signature, trusted_certs,
                           verified: verified_signatures.include?(signature),
-                          has_unsigned_changes: has_unsigned_changes && signature == last_signature)
+                          trusted: trusted_signatures.include?(signature),
+                          modified: has_unsigned_changes && signature == last_verified)
         end
       end
     end
@@ -40,35 +46,39 @@ module VerifyPdfSignature
     else
       verify_contents(pkcs7, signed_data(io, signature.byte_range), trusted_certs)
     end
-  rescue OpenSSL::PKCS7::PKCS7Error, OpenSSL::Timestamp::TimestampError
+  rescue OpenSSL::PKCS7::PKCS7Error, OpenSSL::Timestamp::TimestampError,
+         OpenSSL::ASN1::ASN1Error
     false
   end
 
   def verify_timestamp(pkcs7, signed_data)
-    return false unless pkcs7.verify(pkcs7.certificates, OpenSSL::X509::Store.new, nil,
-                                     OpenSSL::PKCS7::NOVERIFY | OpenSSL::PKCS7::BINARY)
-
-    token_info = OpenSSL::Timestamp::TokenInfo.new(pkcs7.data)
-
-    token_info.message_imprint == OpenSSL::Digest.digest(token_info.algorithm, signed_data)
+    Qes::TimestampToken.verify(pkcs7, signed_data)
+  rescue OpenSSL::Timestamp::TimestampError, OpenSSL::ASN1::ASN1Error
+    false
   end
 
-  def build_signature(signature, trusted_certs, verified:, has_unsigned_changes:)
+  def build_signature(signature, trusted_certs, verified:, trusted:, modified:)
     pkcs7 = OpenSSL::PKCS7.new(signature.contents)
 
     SignatureStruct.new(
-      messages: build_messages(pkcs7, verified, trusted_certs, has_unsigned_changes),
+      messages: build_messages(pkcs7, verified, trusted_certs, modified),
       reason: signature.reason,
       signing_time: signing_time(pkcs7, signature),
       common_name: common_name(pkcs7),
-      type: signature.sub_filter
+      type: signature.sub_filter,
+      verified: verified,
+      trusted: trusted,
+      modified: modified
     )
   rescue OpenSSL::PKCS7::PKCS7Error
     SignatureStruct.new(
       messages: [MessageStruct.new(text: I18n.t('signature_verification_failed'), status: :error)],
       reason: signature.reason,
       signing_time: parse_time(signature.time),
-      type: signature.sub_filter
+      type: signature.sub_filter,
+      verified: false,
+      trusted: false,
+      modified: false
     )
   end
 

@@ -12,6 +12,9 @@
     </native-action>
   <% end %>
 <% end %>
+<% if (qes_verification = @template.preferences&.dig(Qes::VerifiedDocuments::REPORT_KEY)).present? %>
+  <%= render 'qes_verification', template: @template, report: qes_verification %>
+<% end %>
 <% if is_show_header %>
   <div class="<%= is_show_tabs ? 'mb-2 md:mb-4' : 'mb-4 md:mb-6' %>">
     <div class="group/header flex justify-between items-end">
