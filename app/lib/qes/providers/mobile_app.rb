@@ -160,7 +160,7 @@ module Qes
         # včetně revokačních dat a pečeti; řetězení DocTS je evidence record.
         final_pdf, doc_timestamp_state = Qes::DocTimestamp.apply(final_pdf, tsa_url: Qes::Config[:tsa_url])
 
-        if doc_timestamp_state == 'failed' && Qes::Config[:tsa_required]
+        if doc_timestamp_state != 'applied' && Qes::Config[:tsa_required]
           raise ClientError.new(:tsa_unavailable, 'Document timestamp failed')
         end
 

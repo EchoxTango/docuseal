@@ -36,6 +36,7 @@ module Qes
       public_base_url: nil,
       trust_roots: nil,
       tsa_url: nil,
+      tsa_trust_roots: nil,
       tsa_required: true,
       require_ltv: false,
       ltv_allowed_hosts: nil,
@@ -84,6 +85,19 @@ module Qes
   # stejné konfigurace jako při podpisu, aby ověření a podpis měly jeden zdroj pravdy.
   def self.trust_roots
     paths = Config[:trust_roots]
+    paths = paths.split(',') if paths.is_a?(String)
+
+    Array(paths).flat_map do |path|
+      path = path.strip
+      next [] if path.blank? || !File.exist?(path)
+
+      OpenSSL::X509::Certificate.load_file(path)
+    end
+  end
+
+  # Samostatné kořeny důvěry pro časová razítka.
+  def self.tsa_trust_roots
+    paths = Config[:tsa_trust_roots]
     paths = paths.split(',') if paths.is_a?(String)
 
     Array(paths).flat_map do |path|

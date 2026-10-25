@@ -10,14 +10,37 @@ module Qes
 
     module_function
 
+    # PKCS7#verify používá účel S/MIME. Řetěz TSA se proto ověřuje zvlášť
+    # s TIMESTAMP_SIGN; NOVERIFY přeskočí jen tuto duplicitní S/MIME kontrolu.
     # Ověří podpis tokenu a jeho imprint proti `data` (signed data podpisu).
-    def verify(pkcs7, data)
+    def verify(pkcs7, data, trust_roots: Qes.tsa_trust_roots)
       return false unless pkcs7.verify(pkcs7.certificates, OpenSSL::X509::Store.new, nil,
                                      OpenSSL::PKCS7::NOVERIFY | OpenSSL::PKCS7::BINARY)
 
       token_info = OpenSSL::Timestamp::TokenInfo.new(tst_info_der(pkcs7))
 
-      token_info.message_imprint == OpenSSL::Digest.digest(token_info.algorithm, data)
+      return false unless token_info.message_imprint == OpenSSL::Digest.digest(token_info.algorithm, data)
+      return true if trust_roots.empty? && Qes::Config[:tsa_trust_roots].blank?
+
+      trusted_signer?(pkcs7, token_info, trust_roots)
+    rescue OpenSSL::PKCS7::PKCS7Error, OpenSSL::Timestamp::TimestampError,
+           OpenSSL::ASN1::ASN1Error, OpenSSL::X509::CertificateError, ArgumentError, TypeError
+      false
+    end
+
+    def trusted_signer?(pkcs7, token_info, trust_roots)
+      signer = VerifyPdfSignature.signer_certificate(pkcs7)
+      return false if signer.nil? || trust_roots.empty?
+
+      store = OpenSSL::X509::Store.new
+      store.purpose = OpenSSL::X509::PURPOSE_TIMESTAMP_SIGN
+      store.time = token_info.gen_time
+      trust_roots.each { |cert| store.add_cert(cert) }
+      chain = (pkcs7.certificates || []).reject { |cert| cert.to_der == signer.to_der }
+
+      store.verify(signer, chain)
+    rescue OpenSSL::X509::StoreError
+      false
     end
 
     def tst_info_der(pkcs7)

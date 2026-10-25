@@ -196,6 +196,27 @@ RSpec.describe 'Qes sessions API', type: :request do
     expect(session.signed_document).to be_attached
   end
 
+  it 'does not complete when a timestamp is required but the TSA URL is missing' do
+    session, _submitter = create_qes_session(token: 'required-tsa')
+    allow(Qes::Ltv).to receive(:fetch_crls).and_return(nil)
+    post '/qes/sessions/required-tsa/certificate', params: {
+      certificate: Base64.strict_encode64(pkcs.certificate.to_der),
+      chain: (pkcs.ca_certs || []).map { |cert| Base64.strict_encode64(cert.to_der) },
+      key_location: 'phone_keystore'
+    }
+    expect(response).to have_http_status(:ok)
+    signature = pkcs.key.sign(OpenSSL::Digest.new('SHA256'),
+                              Base64.strict_decode64(response.parsed_body['data_to_sign']))
+    Qes::Config[:tsa_required] = true
+
+    post '/qes/sessions/required-tsa/complete', params: { signature: Base64.strict_encode64(signature) }
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.parsed_body['error']).to eq('tsa_unavailable')
+    expect(session.reload.state).not_to eq('completed')
+    expect(session.final_document).not_to be_attached
+  end
+
   it 'stores revocation data in DSS instead of the CMS' do
     session, _submitter = create_qes_session(token: 'big-ltv')
     crl = OpenSSL::X509::CRL.new(QesHelpers.pki_path('root.crl').binread)

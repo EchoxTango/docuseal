@@ -21,29 +21,16 @@ module Qes
       def sign(io, byte_range)
         token = super
 
-        verify_token!(token, digest(io, byte_range))
+        verify_token!(token, Qes::TbsDocument.signed_data(io, byte_range))
 
         token
       end
 
       private
 
-      def digest(io, byte_range)
-        digest = OpenSSL::Digest.new(HASH_ALGORITHM)
-
-        byte_range.each_slice(2) do |offset, length|
-          io.pos = offset
-          digest << io.read(length)
-        end
-
-        digest.digest
-      end
-
-      def verify_token!(token, imprint)
+      def verify_token!(token, data)
         pkcs7 = OpenSSL::PKCS7.new(token)
-        token_info = OpenSSL::Timestamp::TokenInfo.new(Qes::TimestampToken.tst_info_der(pkcs7))
-
-        return if token_info.message_imprint == imprint
+        return if Qes::TimestampToken.verify(pkcs7, data)
 
         raise TimestampError, 'TSA token does not match the document digest'
       rescue OpenSSL::PKCS7::PKCS7Error, OpenSSL::ASN1::ASN1Error, OpenSSL::Timestamp::TimestampError
@@ -55,7 +42,7 @@ module Qes
 
     # Vrátí [pdf_bytes, state], kde state je `applied`, `failed` nebo `none`.
     def apply(pdf_bytes, tsa_url:)
-      return [pdf_bytes, 'none'] if tsa_url.blank?
+      return [pdf_bytes, Qes::Config[:tsa_required] ? 'failed' : 'none'] if tsa_url.blank?
 
       pdf = HexaPDF::Document.new(io: StringIO.new(pdf_bytes))
       pdf.config['signature.signing_handler'][:qes_dts] = Handler

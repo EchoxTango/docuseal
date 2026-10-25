@@ -86,6 +86,7 @@ module Qes
         level: signature[:level],
         intact: signature[:intact],
         trusted: signature[:trusted],
+        tsa_trusted: signature[:tsa_trusted],
         coverage: signature[:coverage],
         common_name: signature[:common_name],
         subject: signature[:subject],

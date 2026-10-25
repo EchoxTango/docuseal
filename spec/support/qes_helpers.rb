@@ -135,6 +135,32 @@ module QesHelpers
     tsa_key_and_certificate.last
   end
 
+  def tsa_root_certificate
+    tsa_root_key_and_certificate.last
+  end
+
+  def tsa_root_key_and_certificate
+    @tsa_root_key_and_certificate ||= begin
+      key = OpenSSL::PKey::RSA.new(2048)
+      certificate = OpenSSL::X509::Certificate.new
+      certificate.version = 2
+      certificate.serial = OpenSSL::BN.rand(64)
+      certificate.subject = OpenSSL::X509::Name.parse('/C=CZ/O=QES Test/CN=Test TSA Root')
+      certificate.issuer = certificate.subject
+      certificate.public_key = key.public_key
+      certificate.not_before = Time.current - 60
+      certificate.not_after = Time.current + 365.days
+      factory = OpenSSL::X509::ExtensionFactory.new
+      factory.subject_certificate = certificate
+      factory.issuer_certificate = certificate
+      certificate.add_extension(factory.create_extension('basicConstraints', 'CA:TRUE', true))
+      certificate.add_extension(factory.create_extension('keyUsage', 'keyCertSign,cRLSign', true))
+      certificate.sign(key, OpenSSL::Digest.new('SHA256'))
+
+      [key, certificate]
+    end
+  end
+
   def tsa_key_and_certificate
     @tsa_key_and_certificate ||= begin
       key = OpenSSL::PKey::RSA.new(2048)
@@ -142,15 +168,16 @@ module QesHelpers
       certificate.version = 2
       certificate.serial = OpenSSL::BN.rand(64)
       certificate.subject = OpenSSL::X509::Name.parse('/C=CZ/O=QES Test/CN=Test TSA')
-      certificate.issuer = certificate.subject
+      certificate.issuer = tsa_root_certificate.subject
       certificate.public_key = key.public_key
       certificate.not_before = Time.current - 60
       certificate.not_after = Time.current + 3600
       factory = OpenSSL::X509::ExtensionFactory.new
       factory.subject_certificate = certificate
-      factory.issuer_certificate = certificate
+      factory.issuer_certificate = tsa_root_certificate
       certificate.add_extension(factory.create_extension('keyUsage', 'digitalSignature', true))
-      certificate.sign(key, OpenSSL::Digest.new('SHA256'))
+      certificate.add_extension(factory.create_extension('extendedKeyUsage', 'timeStamping', true))
+      certificate.sign(tsa_root_key_and_certificate.first, OpenSSL::Digest.new('SHA256'))
 
       [key, certificate]
     end
@@ -219,6 +246,8 @@ module QesHelpers
     Qes::Config[:trust_roots] = pki_path('root.crt').to_s
     Qes::Config[:require_ltv] = false
     Qes::Config[:tsa_url] = nil
+    Qes::Config[:tsa_required] = false
+    Qes::Config[:tsa_trust_roots] = nil
     # SSRF ochrana (SPEC § 7.4): testovací CRL server na 127.0.0.1 je explicitně povolený.
     Qes::Config[:ltv_allowed_hosts] = '127.0.0.1'
     Qes::Config[:seal_pkcs_path] = pki_path('signer-ades.p12').to_s

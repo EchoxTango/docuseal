@@ -134,6 +134,12 @@ RSpec.describe Qes::Verifier do
     expect(report[:verdict]).to eq('valid')
     expect(report[:signatures].map { |signature| signature[:kind] })
       .to include('qes', 'seal', 'timestamp')
+    expect(report[:signatures].last[:tsa_trusted]).to be false
+
+    allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
+    trusted = described_class.call(lta, name: 'lta.pdf', account: submitter.account)
+    expect(trusted[:verdict]).to eq('valid')
+    expect(trusted[:signatures].last[:tsa_trusted]).to be true
   end
 
   it 'rejects an untrusted seal even when a later DocTS covers it' do

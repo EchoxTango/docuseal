@@ -21,6 +21,23 @@ RSpec.describe Qes::DocTimestamp do
     expect(described_class.apply(pdf, tsa_url: nil)).to eq([pdf, 'none'])
   end
 
+  it 'fails when a required TSA URL is missing' do
+    Qes::Config[:tsa_required] = true
+    pdf = blank_pdf
+
+    expect(described_class.apply(pdf, tsa_url: nil)).to eq([pdf, 'failed'])
+  end
+
+  it 'rejects a token from a TSA outside the configured trust roots' do
+    allow(Qes).to receive(:tsa_trust_roots).and_return(QesHelpers.trust_roots)
+    allow_any_instance_of(Submissions::TimestampHandler).to receive(:sign) do |_handler, io, byte_range|
+      QesHelpers.timestamp_token(io, byte_range)
+    end
+    pdf = blank_pdf
+
+    expect(described_class.apply(pdf, tsa_url: 'http://tsa.test')).to eq([pdf, 'failed'])
+  end
+
   it 'adds a DocTimeStamp signature in a new revision' do
     pdf = blank_pdf
     token = File.binread(QesHelpers::TEST_DIR.join('fixtures', 'digicert-token.der'))

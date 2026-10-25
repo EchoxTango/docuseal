@@ -55,7 +55,7 @@ module Qes
       result = { sub_filter:, kind: kind_for(sub_filter), qes: sub_filter == 'ETSI.CAdES.detached',
                  signing_time: nil, common_name: nil, subject: nil, issuer: nil, serial: nil,
                  not_before: nil, not_after: nil, chain: [], level: 'none',
-                 intact: false, trusted: false, coverage: 'none' }
+                 intact: false, trusted: false, tsa_trusted: false, coverage: 'none' }
 
       return result if byte_range.blank? || contents.blank?
 
@@ -73,6 +73,7 @@ module Qes
       result[:signing_time] = signing_time(pkcs7)
       result[:level] = signer_cert ? Qes::CertificateInfo.new(signer_cert).level : 'none'
       result[:intact] = verify_cms(pkcs7, data, trust_roots, sub_filter)
+      result[:tsa_trusted] = result[:kind] == 'timestamp' && result[:intact] && Qes.tsa_trust_roots.any?
       # Trust roots QES se vztahují jen na podpisy appky (CAdES); pečeť
       # DocuSealu (adbe.pkcs7.detached) se ověřuje vlastním certem účtu.
       # Ze řetězu se musí vynechat cert podepisujícího, jinak by se
