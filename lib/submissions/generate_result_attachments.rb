@@ -164,7 +164,7 @@ module Submissions
 
       pdfs_index =
         if base
-          Qes.template_schema(submitter.submission).each_with_object({}) do |item, acc|
+          Submissions.filtered_conditions_schema(submitter.submission).each_with_object({}) do |item, acc|
             acc[item['attachment_uuid']] = base
           end
         else

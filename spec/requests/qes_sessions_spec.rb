@@ -434,4 +434,46 @@ RSpec.describe 'Qes sessions API', type: :request do
     expect(response).to have_http_status(:too_many_requests)
     expect(response.parsed_body['error']).to eq('rate_limited')
   end
+  it 'includes current form values in the stored TBS before awaiting_signature' do
+    session, submitter = create_qes_session(token: 'snapshot')
+    field = Qes.template_fields(submitter.submission).find { |f| f['type'] == 'text' }
+    submitter.update!(values: { field['uuid'] => 'Agreed contract value' })
+    allow(Qes::Ltv).to receive(:fetch_crls).and_return([])
+
+    post '/qes/sessions/snapshot/certificate', params: {
+      certificate: Base64.strict_encode64(pkcs.certificate.to_der),
+      chain: (pkcs.ca_certs || []).map { |cert| Base64.strict_encode64(cert.to_der) }
+    }
+
+    expect(response).to have_http_status(:ok)
+    expect(session.reload.state).to eq('awaiting_signature')
+    text = Pdfium::Document.open_io(StringIO.new(session.tbs_document.download)) do |pdf|
+      (0...pdf.page_count).map { |index| pdf.get_page(index).text }.join("\n")
+    end
+    expect(text).to include('Agreed contract value')
+    expect(session.tbs_document.blob.metadata['qes_values']).to eq(field['uuid'] => 'Agreed contract value')
+
+    submitter.update!(values: { field['uuid'] => 'Changed while signing' })
+    signature = pkcs.key.sign(OpenSSL::Digest.new('SHA256'), session.signed_attrs_der)
+    post '/qes/sessions/snapshot/complete', params: { signature: Base64.strict_encode64(signature) }
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.parsed_body['error']).to eq('values_changed')
+    expect(session.reload.state).not_to eq('completed')
+  end
+  it 'does not overwrite completion when a concurrent request fails' do
+    session, _submitter = create_qes_session(token: 'race')
+    session.update!(state: 'awaiting_signature')
+    allow_any_instance_of(Qes::Providers::MobileApp).to receive(:complete!) do
+      QesSession.where(id: session.id).update_all(state: 'completed', completed_at: Time.current)
+      raise Qes::ClientError.new(:signature_invalid)
+    end
+
+    post '/qes/sessions/race/complete', params: { signature: Base64.strict_encode64('bad') }
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(session.reload.state).to eq('completed')
+    expect(session.failure_code).to be_nil
+    expect(session.failed_at).to be_nil
+  end
 end

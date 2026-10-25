@@ -27,20 +27,16 @@ module Qes
         # jako QES zapsat i self-signed certifikát s podvrženými QCStatements.
         Qes::Validator.verify_chain!(certificate, chain, trust_roots)
 
-        # CRL se stahují před transakcí v controlleru (M20); tady se jen ověří.
+        # CRL se stahují v controlleru před přípravou TBS; tady se jen ověří.
         Qes::Ltv.check_revoked!(certificate, chain:, crls:)
+
+        session.submitter.reload
+        values_snapshot = Qes::ValueValidator.non_qes_values(session.submitter.values, session.submitter)
 
         tbs_pdf = Qes::TbsDocument.build(
           session.submitter, session.field,
           signature_size: tbs_signature_size(certificate, chain)
         )
-
-        session.tbs_document.attach(
-          io: StringIO.new(tbs_pdf),
-          filename: "qes-tbs-#{session.id}.pdf",
-          content_type: 'application/pdf'
-        )
-        session.update!(document_digest: Qes::TbsDocument.document_digest(tbs_pdf))
 
         data = Qes::TbsDocument.signed_data(StringIO.new(tbs_pdf), Qes::TbsDocument.byte_range(tbs_pdf))
 
@@ -52,14 +48,34 @@ module Qes
           digest_algorithm: session.hash_algorithm
         )
 
-        session.update!(
-          signed_attrs_der: prepared[:signed_attrs_der],
-          certificate_info: certificate_info,
-          certificate_chain: [certificate_der, *normalize_chain(chain)].map { |der| Base64.strict_encode64(der) },
-          level: certificate_info[:level],
-          key_location: key_location,
-          app_metadata: app_metadata
-        )
+        # Bajty musí být uložené před zveřejněním stavu awaiting_signature.
+        tbs_blob = upload_document(tbs_pdf, 'qes-tbs', metadata: { qes_values: values_snapshot })
+
+        session.with_lock do
+          unless session.state.in?(%w[awaiting_app app_opened])
+            raise ClientError.new(:wrong_state, 'Session is not awaiting a certificate')
+          end
+
+          session.submitter.lock!
+          if Qes::ValueValidator.non_qes_values(session.submitter.values, session.submitter) != values_snapshot
+            raise ClientError.new(:values_changed, 'Field values changed during document preparation')
+          end
+
+          session.tbs_document.attach(tbs_blob)
+          session.update!(
+            document_digest: Qes::TbsDocument.document_digest(tbs_pdf, algorithm: session.hash_algorithm),
+            signed_attrs_der: prepared[:signed_attrs_der],
+            certificate_info: certificate_info,
+            certificate_chain: [certificate_der, *normalize_chain(chain)].map { |der| Base64.strict_encode64(der) },
+            level: certificate_info[:level],
+            key_location: key_location,
+            app_metadata: app_metadata,
+            failure_code: nil,
+            failure_message: nil
+          )
+          Qes::SessionManager.transition!(session, 'app_opened') if session.state == 'awaiting_app'
+          Qes::SessionManager.transition!(session, 'awaiting_signature')
+        end
 
         {
           data_to_sign: Base64.strict_encode64(prepared[:signed_attrs_der]),
@@ -176,6 +192,9 @@ module Qes
           raise ClientError.new(:validation_failed, 'Signature validation failed')
         end
 
+        signed_blob = upload_document(signed_pdf, 'qes-signed')
+        final_blob = upload_document(final_pdf, 'qes-final')
+
         session.with_lock do
           return session.validation_report if session.state == 'completed'
 
@@ -183,10 +202,17 @@ module Qes
             raise ClientError.new(:wrong_state, 'Session is not awaiting a signature')
           end
 
+          submitter = session.submitter
+          submitter.lock!
+          snapshot = session.tbs_document.blob.metadata['qes_values']
+          if snapshot && Qes::ValueValidator.non_qes_values(submitter.values, submitter) != snapshot
+            raise ClientError.new(:values_changed, 'Field values changed after document preparation')
+          end
+
           # `signed_document` (bez pečeti) se uchovává pro audit a
           # reprodukovatelnost hashe `signed_pdf_sha256` (SPEC § 7.6 bod 3).
-          attach_document(session, :signed_document, signed_pdf, 'qes-signed')
-          attach_document(session, :final_document, final_pdf, 'qes-final')
+          session.signed_document.attach(signed_blob)
+          session.final_document.attach(final_blob)
           session.update!(signature:, signed_pdf_sha256: Digest::SHA256.hexdigest(signed_pdf),
                           final_pdf_sha256: Digest::SHA256.hexdigest(final_pdf),
                           seal_state:, doc_timestamp_state:, validation_report: report)
@@ -195,7 +221,6 @@ module Qes
           Qes::SessionManager.transition!(session, 'validated')
           Qes::SessionManager.transition!(session, 'completed')
 
-          submitter = session.submitter
           submitter.update!(values: submitter.values.merge(session.field_uuid => session.value_token))
 
           Qes.log(session)
@@ -206,11 +231,12 @@ module Qes
 
       private
 
-      def attach_document(session, name, bytes, prefix)
-        session.public_send(name).attach(
+      def upload_document(bytes, prefix, metadata: {})
+        ActiveStorage::Blob.create_and_upload!(
           io: StringIO.new(bytes),
           filename: "#{prefix}-#{session.id}.pdf",
-          content_type: 'application/pdf'
+          content_type: 'application/pdf',
+          metadata:
         )
       end
 

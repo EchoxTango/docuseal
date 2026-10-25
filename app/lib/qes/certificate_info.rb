@@ -70,6 +70,10 @@ module Qes
       usage.nil? || usage[0] == '1'
     end
 
+    def content_commitment?
+      key_usage&.[](1) == '1'
+    end
+
     def find_extension(oid, short_name)
       certificate.extensions.find { |ext| ext.oid == oid || ext.oid == short_name }
     end
@@ -114,7 +118,9 @@ module Qes
     # Zkontroluje certifikát proti požadované úrovni a umístění klíče (SPEC § 5.2).
     # Vrací hash pro `certificate_info`; při chybě vyhodí `Qes::ClientError`.
     def validate!(level_required:, key_location:, at: Time.current)
-      raise ClientError.new(:invalid_certificate, 'Missing digitalSignature key usage') unless digital_signature?
+      unless digital_signature? || content_commitment?
+        raise ClientError.new(:invalid_certificate, 'Missing digitalSignature or contentCommitment key usage')
+      end
       raise ClientError.new(:certificate_expired, 'Certificate is not valid at this time') if expired?(at)
       raise ClientError.new(:unsupported_key, "Unsupported key type #{key_type.inspect}") unless %w[rsa ecdsa].include?(key_type)
       raise ClientError.new(:unsupported_key, 'Key too small') if key_type == 'rsa' && key_size < 2048

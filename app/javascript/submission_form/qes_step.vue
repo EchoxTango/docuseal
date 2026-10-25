@@ -80,6 +80,7 @@
 import {
   cancelPath as qesStepCancelPath,
   cancelledState as qesStepCancelledState,
+  createPollGuard as qesStepCreatePollGuard,
   doneText as qesStepDoneText,
   errorKey as qesStepErrorKey,
   expiresInText as qesStepExpiresInText,
@@ -109,6 +110,7 @@ export default {
       error: null,
       level: this.field.preferences?.level || 'ades',
       pollTimer: null,
+      pollGuard: qesStepCreatePollGuard(),
       backoff: 2000,
       startedAt: null
     }
@@ -156,14 +158,22 @@ export default {
       return payload
     },
     async createSession() {
+      this.stopPolling()
+      this.session = null
+      const ticket = this.pollGuard.begin(null)
       this.phase = 'creating'
       this.$emit('start')
       try {
-        this.session = await this.post('/qes_sessions', { field_uuid: this.field.uuid })
+        const session = await this.post('/qes_sessions', { field_uuid: this.field.uuid })
+        if (!ticket.isCurrent(this.session?.id ?? null)) return
+
+        this.session = session
         this.phase = 'awaiting_app'
         this.startedAt = Date.now()
         this.schedulePoll(2000)
       } catch (error) {
+        if (!ticket.isCurrent(this.session?.id ?? null)) return
+
         this.error = error.code || 'network'
         this.phase = 'failed'
       }
@@ -178,13 +188,16 @@ export default {
       this.pollTimer = setTimeout(this.poll, delay)
     },
     stopPolling() {
+      this.pollGuard.invalidate()
       if (this.pollTimer) clearTimeout(this.pollTimer)
       this.pollTimer = null
     },
     async poll() {
       if (!this.session) return
+      const ticket = this.pollGuard.begin(this.session.id)
       try {
-        const state = await this.fetchState()
+        const state = await this.fetchState(ticket)
+        if (!ticket.isCurrent(this.session?.id)) return
         this.backoff = 2000
         const terminal = qesStepTerminalPhase(state.state)
         if (terminal === 'completed') {
@@ -202,6 +215,8 @@ export default {
           return
         }
       } catch (error) {
+        if (!ticket.isCurrent(this.session?.id)) return
+
         if (error.status === 410) {
           this.stopPolling()
           this.error = error.code
@@ -210,6 +225,8 @@ export default {
         }
         this.backoff = qesStepNextBackoff(this.backoff)
       }
+      if (!ticket.isCurrent(this.session?.id)) return
+
       if (qesStepPollTimedOut(this.startedAt)) {
         this.stopPolling()
         this.phase = 'expired'
@@ -217,12 +234,15 @@ export default {
       }
       this.schedulePoll(this.backoff)
     },
-    async fetchState() {
+    async fetchState(ticket) {
       const response = await fetch(
-        `${this.baseUrl}/s/${this.submitterSlug}/qes_sessions/${this.session.id}`,
-        { headers: { Accept: 'application/json' } }
+        `${this.baseUrl}/s/${this.submitterSlug}/qes_sessions/${ticket.sessionId}`,
+        { headers: { Accept: 'application/json' }, signal: ticket.signal }
       )
+      if (!ticket.isCurrent(this.session?.id)) return null
+
       const payload = await response.json().catch(() => ({}))
+      if (!ticket.isCurrent(this.session?.id)) return null
       if (!response.ok) {
         const error = new Error(payload.error || 'network')
         error.status = response.status
@@ -232,13 +252,16 @@ export default {
       return payload
     },
     async cancelSession() {
+      const sessionId = this.session?.id
       this.stopPolling()
+      Object.assign(this, qesStepCancelledState())
+      if (!sessionId) return
+
       try {
-        await this.post(qesStepCancelPath(this.session.id), {})
+        await this.post(qesStepCancelPath(sessionId), {})
       } catch {
         // zrušení je best-effort; session stejně vyprší
       }
-      Object.assign(this, qesStepCancelledState())
     },
     reset() {
       this.stopPolling()

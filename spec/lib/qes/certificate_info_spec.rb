@@ -53,4 +53,30 @@ RSpec.describe Qes::CertificateInfo do
         .to include(level: 'ades', key_type: 'rsa')
     end
   end
+  describe 'document signing key usage' do
+    %w[digitalSignature nonRepudiation digitalSignature,nonRepudiation].each do |usage|
+      it "accepts #{usage}" do
+        key, certificate = QesHelpers.self_signed_qc_sscd_certificate
+        factory = OpenSSL::X509::ExtensionFactory.new
+        certificate.extensions = certificate.extensions.reject { |extension| extension.oid == 'keyUsage' }
+        certificate.add_extension(factory.create_extension('keyUsage', usage, true))
+        certificate.sign(key, OpenSSL::Digest.new('SHA256'))
+        info = described_class.parse(certificate.to_der)
+
+        expect(info.validate!(level_required: 'qes', key_location: 'card')).to include(level: 'qes')
+      end
+    end
+
+    it 'rejects a certificate with neither signing bit' do
+      key, certificate = QesHelpers.self_signed_qc_sscd_certificate
+      factory = OpenSSL::X509::ExtensionFactory.new
+      certificate.extensions = certificate.extensions.reject { |extension| extension.oid == 'keyUsage' }
+      certificate.add_extension(factory.create_extension('keyUsage', 'keyEncipherment', true))
+      certificate.sign(key, OpenSSL::Digest.new('SHA256'))
+      info = described_class.parse(certificate.to_der)
+
+      expect { info.validate!(level_required: 'qes', key_location: 'card') }
+        .to raise_error(Qes::ClientError) { |error| expect(error.code).to eq(:invalid_certificate) }
+    end
+  end
 end

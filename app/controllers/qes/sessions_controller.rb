@@ -27,6 +27,17 @@ module Qes
       render json: payload
     end
 
+    def document
+      return render_qes_error_with(:expired_token, :gone) if @session.expired?
+      return render_qes_error_with(:used_token, :gone) if @session.terminal?
+      return render_qes_error_with(:wrong_state, :conflict) unless @session.state == 'awaiting_signature'
+      return render_qes_error_with(:document_missing, :conflict) unless @session.tbs_document.attached?
+
+      response.set_header('Cache-Control', 'no-store')
+      send_data @session.tbs_document.download, type: 'application/pdf', disposition: 'inline',
+                                                filename: "qes-tbs-#{@session.id}.pdf"
+    end
+
     def certificate
       return render_qes_error_with(:expired_token, :gone) if @session.expired?
       return render_qes_error_with(:used_token, :gone) if @session.terminal?
@@ -47,30 +58,16 @@ module Qes
       return render_qes_error_with(:wrong_state, :conflict) unless @session.state.in?(%w[awaiting_app app_opened])
 
       provider = provider_for(@session)
-      prepared = nil
       # CRL fetch (síť) mimo DB transakci; transakce pak drží jen zápis (M20).
       crls = Qes::Ltv.fetch_crls(certificate_der, chain:)
 
-      QesSession.transaction do
-        Qes::SessionManager.transition!(@session, 'app_opened') if @session.state == 'awaiting_app'
-        prepared = provider.data_to_sign(certificate_der, chain:, key_location:,
-                                                          app_metadata: params[:app].presence,
-                                                          crls: crls || [])
-        Qes::SessionManager.transition!(@session, 'awaiting_signature')
-        # Úspěšné přijetí certifikátu maže diagnostiku předchozího odmítnutí.
-        @session.update!(failure_code: nil, failure_message: nil) if @session.failure_code.present?
-      end
+      provider.data_to_sign(certificate_der, chain:, key_location:,
+                                            app_metadata: params[:app].presence,
+                                            crls: crls || [])
 
       Qes.log(@session)
 
-      render json: {
-        data_to_sign: Base64.strict_encode64(prepared[:signed_attrs_der]),
-        hash_algorithm: prepared[:hash_algorithm],
-        digest_algorithm_oid: prepared[:digest_algorithm_oid],
-        signature_algorithm: prepared[:signature_algorithm],
-        expires_at: @session.expires_at.utc.iso8601,
-        certificate_info: prepared[:certificate_info]
-      }
+      render json: certificate_payload
     rescue Qes::ClientError => e
       QesSession.where(id: @session.id).update_all(failure_code: e.code.to_s)
       @session.reload
@@ -192,7 +189,9 @@ module Qes
         digest_algorithm_oid: Qes::CmsBuilder::DIGEST_ALGORITHM_OIDS.fetch(@session.hash_algorithm),
         signature_algorithm: @session.signature_algorithm,
         expires_at: @session.expires_at&.utc&.iso8601,
-        certificate_info: @session.certificate_info
+        certificate_info: @session.certificate_info,
+        byte_range: Qes::TbsDocument.byte_range(@session.tbs_document.download),
+        document_digest: @session.document_digest
       }
     end
 
@@ -211,10 +210,9 @@ module Qes
     end
 
     def fail_session(error)
-      QesSession.where(id: @session.id).update_all(failure_code: error.code.to_s,
-                                                  failure_message: error.message,
-                                                  failed_at: Time.current,
-                                                  state: 'failed')
+      QesSession.where(id: @session.id).where.not(state: 'completed')
+                .update_all(failure_code: error.code.to_s, failure_message: error.message,
+                            failed_at: Time.current, state: 'failed')
       @session.reload
       Qes.log(@session)
     end

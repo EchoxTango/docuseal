@@ -112,4 +112,31 @@ RSpec.describe 'QES chained signatures' do
       expect(Array(tbs.pages[0][:Contents]).size).to eq(Array(base.pages[0][:Contents]).size)
     end
   end
+  it 'uses only included documents for offsets and chained field rendering' do
+    submission = QesHelpers.build_qes_submission(attachment_count: 2, qes_attachment_index: 1)
+    submitter = submission.submitters.first
+    excluded, included = submission.template_schema.pluck('attachment_uuid')
+    text_fields = Qes.template_fields(submission).select { |field| field['type'] == 'text' }
+    condition_field = text_fields.first
+    schema = submission.template_schema.deep_dup
+    schema.first['conditions'] = [{ 'field_uuid' => condition_field['uuid'], 'action' => 'not_empty' }]
+    submission.update!(template_schema: schema)
+    submitter.update!(values: { text_fields.last['uuid'] => 'Included contract' })
+
+    expect(Submissions.filtered_conditions_schema(submission).pluck('attachment_uuid')).to eq([included])
+    expect(Qes::TbsDocument.page_offsets(submission)).to eq(included => 0)
+    base = Qes::TbsDocument.merged_document(submitter)
+    expect(base.pages.size).to eq(1)
+
+    pdfs = Submissions::GenerateResultAttachments.generate_pdfs(
+      submitter, base:, page_offsets: Qes::TbsDocument.page_offsets(submission)
+    )
+    expect(pdfs.keys).to eq([included])
+    expect(pdfs).not_to have_key(excluded)
+
+    field = Qes.template_fields(submission).find { |f| f['type'] == 'qes' }
+    tbs = Qes::TbsDocument.build(submitter, field)
+    text = Pdfium::Document.open_io(StringIO.new(tbs)) { |pdf| pdf.get_page(0).text }
+    expect(text).to include('Included contract', I18n.t('qes.stamp.title', locale: submitter.account.locale))
+  end
 end

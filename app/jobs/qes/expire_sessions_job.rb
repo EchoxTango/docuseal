@@ -11,7 +11,9 @@ module Qes
 
     def perform
       QesSession.stale.find_each do |session|
-        Qes::SessionManager.transition!(session, 'expired', failure_code: 'expired')
+        QesSession.stale.where(id: session.id).where.not(state: 'completed')
+                  .update_all(state: 'expired', failure_code: 'expired', updated_at: Time.current)
+        session.reload
         Qes.log(session)
       rescue Qes::InvalidTransition
         nil

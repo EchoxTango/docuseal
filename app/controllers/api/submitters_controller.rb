@@ -38,6 +38,10 @@ module Api
 
     # rubocop:disable Metrics/MethodLength
     def update
+      if submitter_params[:completed] && Qes.missing_required_sessions(@submitter).present?
+        return render json: { error: 'Required QES signatures are missing' }, status: :unprocessable_content
+      end
+
       submission = @submitter.submission
       role = submission.template_submitters.find { |e| e['uuid'] == @submitter.uuid }['name']
 
@@ -51,9 +55,12 @@ module Api
       Submissions::CreateFromSubmitters.maybe_set_template_fields(submission, [normalized_params],
                                                                   default_submitter_uuid: @submitter.uuid)
 
-      assign_submitter_attrs(@submitter, normalized_params)
-
       ApplicationRecord.transaction do
+        @submitter.lock!
+        @submitter.submission = submission
+        assign_submitter_attrs(@submitter, normalized_params)
+        Qes::ValueValidator.call(@submitter.values, @submitter)
+
         Submissions::NormalizeParamUtils.save_default_value_attachments!(new_attachments, [@submitter])
 
         @submitter.save!
