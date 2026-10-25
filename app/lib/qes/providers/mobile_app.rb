@@ -28,7 +28,7 @@ module Qes
         Qes::Validator.verify_chain!(certificate, chain, trust_roots)
 
         # CRL se stahují před transakcí v controlleru (M20); tady se jen ověří.
-        Qes::Ltv.check_revoked!(certificate, crls:)
+        Qes::Ltv.check_revoked!(certificate, chain:, crls:)
 
         tbs_pdf = Qes::TbsDocument.build(
           session.submitter, session.field,
@@ -93,6 +93,8 @@ module Qes
       def ltv_values
         certificates = session.certificate_chain.map { |der| OpenSSL::X509::Certificate.new(Base64.decode64(der)) }
         crls = Qes::Ltv.fetch_crls(certificates.first, chain: certificates.drop(1))
+
+        Qes::Ltv.check_revoked!(certificates.first, chain: certificates.drop(1), crls:) if crls
 
         crls && { crls: crls.map(&:to_der) }
       end

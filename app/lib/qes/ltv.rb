@@ -11,6 +11,7 @@ module Qes
   # a pyHanko ho nečte; data jdou do DSS s VRI (viz `Qes::Dss`).
   module Ltv
     CRL_DISTRIBUTION_POINT_OID = '2.5.29.31'
+    CLOCK_SKEW = 300
     FETCH_TIMEOUT = 10
     MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
@@ -49,11 +50,22 @@ module Qes
       crls ||= fetch_crls(certificate, chain:)
       return if crls.blank?
 
-      crls.each do |crl|
-        next unless crl.issuer == certificate.issuer
-        next unless crl.revoked.any? { |entry| entry.serial == certificate.serial }
+      certs = [certificate, *chain].map do |cert|
+        cert.is_a?(OpenSSL::X509::Certificate) ? cert : OpenSSL::X509::Certificate.new(cert)
+      end
 
-        raise ClientError.new(:revoked, 'Certificate is revoked')
+      certs.each do |cert|
+        next if self_signed?(cert)
+
+        crls.each do |crl|
+          next unless crl.issuer == cert.issuer
+
+          issuer = issuer_for(cert, certs + Qes.trust_roots)
+          validate_crl!(crl, cert, issuer)
+          next unless crl.revoked.any? { |entry| entry.serial == cert.serial }
+
+          raise ClientError.new(:revoked, 'Certificate is revoked')
+        end
       end
     end
 
@@ -65,7 +77,7 @@ module Qes
         next if urls.empty?
 
         crl = fetch_first_crl(urls)
-        issuer = certs.find { |candidate| candidate.subject == cert.issuer }
+        issuer = issuer_for(cert, certs + Qes.trust_roots)
 
         validate_crl!(crl, cert, issuer)
 
@@ -141,10 +153,20 @@ module Qes
       true
     end
 
-    def validate_crl!(crl, cert, issuer)
-      return if crl.issuer == cert.issuer && issuer && crl.verify(issuer.public_key)
+    def issuer_for(cert, candidates)
+      candidates.find { |candidate| candidate.subject == cert.issuer && cert.verify(candidate.public_key) }
+    end
 
-      raise FetchError, 'CRL does not match certificate issuer'
+    def validate_crl!(crl, cert, issuer)
+      unless crl.issuer == cert.issuer && issuer && crl.verify(issuer.public_key)
+        raise FetchError, 'CRL does not match certificate issuer'
+      end
+
+      now = Time.current
+      unless crl.last_update && crl.next_update &&
+             crl.last_update <= now + CLOCK_SKEW && crl.next_update >= now - CLOCK_SKEW
+        raise FetchError, 'CRL is outside its validity period'
+      end
     end
 
     def crl_urls(cert)
