@@ -30,6 +30,9 @@ module Qes
         # CRL se stahují před transakcí v controlleru (M20); tady se jen ověří.
         Qes::Ltv.check_revoked!(certificate, crls:)
 
+        session.submitter.reload
+        values_snapshot = Qes::ValueValidator.non_qes_values(session.submitter.values, session.submitter)
+
         tbs_pdf = Qes::TbsDocument.build(
           session.submitter, session.field,
           signature_size: tbs_signature_size(certificate, chain)
@@ -38,7 +41,8 @@ module Qes
         session.tbs_document.attach(
           io: StringIO.new(tbs_pdf),
           filename: "qes-tbs-#{session.id}.pdf",
-          content_type: 'application/pdf'
+          content_type: 'application/pdf',
+          metadata: { qes_values: values_snapshot }
         )
         session.update!(document_digest: Qes::TbsDocument.document_digest(tbs_pdf))
 
@@ -175,6 +179,13 @@ module Qes
             raise ClientError.new(:wrong_state, 'Session is not awaiting a signature')
           end
 
+          submitter = session.submitter
+          submitter.lock!
+          snapshot = session.tbs_document.blob.metadata['qes_values']
+          if snapshot && Qes::ValueValidator.non_qes_values(submitter.values, submitter) != snapshot
+            raise ClientError.new(:values_changed, 'Field values changed after document preparation')
+          end
+
           # `signed_document` (bez pečeti) se uchovává pro audit a
           # reprodukovatelnost hashe `signed_pdf_sha256` (SPEC § 7.6 bod 3).
           attach_document(session, :signed_document, signed_pdf, 'qes-signed')
@@ -187,7 +198,6 @@ module Qes
           Qes::SessionManager.transition!(session, 'validated')
           Qes::SessionManager.transition!(session, 'completed')
 
-          submitter = session.submitter
           submitter.update!(values: submitter.values.merge(session.field_uuid => session.value_token))
 
           Qes.log(session)

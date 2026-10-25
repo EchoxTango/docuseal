@@ -29,7 +29,9 @@ module Submitters
         WebhookUrls.enqueue_events(submitter, 'form.started')
       end
 
-      update_submitter!(submitter, params, request, validate_required:)
+      submitter.with_lock do
+        update_submitter!(submitter, params, request, validate_required:)
+      end
 
       submitter.submission.save!
 
