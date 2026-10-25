@@ -84,7 +84,10 @@ RSpec.describe Qes::Verifier do
   end
 
   it 'keeps a DSS and DocTS (PAdES-LTA) update valid' do
-    sealed = QesHelpers.signed_pdf(seal: true)
+    submitter = QesHelpers.build_qes_submitter
+    allow(Accounts).to receive(:load_trusted_certs).with(submitter.account)
+      .and_return([QesHelpers.pkcs12.certificate])
+    sealed = QesHelpers.signed_pdf(seal: true, submitter:)
     crl = OpenSSL::X509::CRL.new(QesHelpers.pki_path('root.crl').binread)
     with_dss = Qes::Dss.apply(sealed, crls: [crl.to_der],
                               signature_contents: QesHelpers.signature_contents(sealed))
@@ -97,12 +100,46 @@ RSpec.describe Qes::Verifier do
 
     expect(state).to eq('applied')
 
-    report = described_class.call(lta, name: 'lta.pdf')
+    report = described_class.call(lta, name: 'lta.pdf', account: submitter.account)
 
     expect(report[:modified]).to be false
     expect(report[:verdict]).to eq('valid')
     expect(report[:signatures].map { |signature| signature[:kind] })
       .to include('qes', 'seal', 'timestamp')
+  end
+
+  it 'rejects an untrusted seal even when a later DocTS covers it' do
+    submitter = QesHelpers.build_qes_submitter
+    sealed, state = Qes::Seal.apply(pdf, submitter.account, submitter:,
+                                    pkcs: QesHelpers.self_signed_pkcs12)
+    expect(state).to eq('applied')
+    allow_any_instance_of(Qes::DocTimestamp::Handler).to receive(:sign) do |_handler, io, byte_range|
+      QesHelpers.timestamp_token(io, byte_range)
+    end
+    stamped, state = Qes::DocTimestamp.apply(sealed, tsa_url: 'http://tsa.test')
+
+    expect(state).to eq('applied')
+    report = described_class.call(stamped, name: 'untrusted-seal.pdf')
+
+    expect(report[:modified]).to be false
+    expect(report[:verdict]).to eq('valid_untrusted')
+  end
+
+  it 'detects content changes followed by an untrusted seal' do
+    document = HexaPDF::Document.new(io: StringIO.new(pdf))
+    document.pages[0].canvas(type: :overlay).rectangle(40, 40, 100, 100).fill
+    changed = StringIO.new
+    document.write(changed, incremental: true)
+    submitter = QesHelpers.build_qes_submitter
+    sealed, state = Qes::Seal.apply(changed.string, submitter.account, submitter:,
+                                    pkcs: QesHelpers.self_signed_pkcs12)
+
+    expect(state).to eq('applied')
+    report = described_class.call(sealed, name: 'changed-and-sealed.pdf')
+
+    expect(report[:intact]).to be true
+    expect(report[:modified]).to be true
+    expect(report[:verdict]).to eq('invalid')
   end
 
   it 'returns unsigned for a PDF without signatures' do
@@ -115,9 +152,12 @@ RSpec.describe Qes::Verifier do
   end
 
   it 'detects the DocuSeal seal and keeps the app signature intact' do
-    sealed = QesHelpers.signed_pdf(seal: true)
+    submitter = QesHelpers.build_qes_submitter
+    allow(Accounts).to receive(:load_trusted_certs).with(submitter.account)
+      .and_return([QesHelpers.pkcs12.certificate])
+    sealed = QesHelpers.signed_pdf(seal: true, submitter:)
 
-    report = described_class.call(sealed, name: 'sealed.pdf')
+    report = described_class.call(sealed, name: 'sealed.pdf', account: submitter.account)
 
     expect(report[:verdict]).to eq('valid')
     expect(report[:seal]).to include(present: true, count: 1)

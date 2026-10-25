@@ -10,7 +10,7 @@ module VerifyPdfSignature
 
   module_function
 
-  def call(io, trusted_certs)
+  def call(io, trusted_certs, trusted_ranges: nil)
     Pdfium.with_instance do
       Pdfium::Document.open_io(io) do |document|
         signatures = document.signatures.select { |e| e.byte_range.any?(&:positive?) && e.contents.present? }
@@ -19,21 +19,37 @@ module VerifyPdfSignature
 
         verified_signatures = signatures.select { |e| verified_signature?(e, io, trusted_certs) }
         trusted_signatures = verified_signatures.select { |e| trusted_signature?(e, trusted_certs) }
-        # Unsigned změny se počítají až za **posledním ověřeným** podpisem, ne za
-        # posledním důvěryhodným: DocTS (PAdES-LTA) je ověřený, ale nedůvěryhodný
-        # (TSA cert není certem účtu) a kryje celý dokument včetně DSS (SPEC § 7.6).
-        last_verified = verified_signatures.max_by(&:signed_end)
-        last_signature = (trusted_signatures.presence || verified_signatures).max_by(&:signed_end)
-        has_unsigned_changes = last_verified && unsigned_changes?(document, io, last_verified.signed_end)
+        # Hranici změn smí posunout jen důvěryhodný podpis nebo ověřený DocTS.
+        accepted = verified_signatures.select do |signature|
+          if trusted_ranges
+            trusted_ranges.include?(signature.byte_range)
+          else
+            signature.sub_filter == 'ETSI.RFC3161' ||
+              (signature.sub_filter == 'adbe.pkcs7.detached' && trusted_signatures.include?(signature)) ||
+              trusted_qes_signature?(signature)
+          end
+        end
+        last_signature = accepted.max_by(&:signed_end)
+        has_unsigned_changes = last_signature && unsigned_changes?(document, io, last_signature.signed_end)
 
         signatures.map do |signature|
           build_signature(signature, trusted_certs,
                           verified: verified_signatures.include?(signature),
                           trusted: trusted_signatures.include?(signature),
-                          modified: has_unsigned_changes && signature == last_verified)
+                          modified: has_unsigned_changes && signature == last_signature)
         end
       end
     end
+  end
+
+  def trusted_qes_signature?(signature)
+    return false unless signature.sub_filter == 'ETSI.CAdES.detached'
+
+    pkcs7 = OpenSSL::PKCS7.new(signature.contents)
+    signer = signer_certificate(pkcs7)
+    chain = (pkcs7.certificates || []).reject { |cert| cert.to_der == signer&.to_der }
+
+    Qes::Validator.trusted_chain?(signer, chain, Qes.trust_roots)
   end
 
   def verified_signature?(signature, io, trusted_certs)

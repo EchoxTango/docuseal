@@ -55,8 +55,8 @@ module Qes
     def compute_verdict(signatures, qes, modified)
       return 'unsigned' if signatures.empty?
       return 'invalid' if signatures.any? { |signature| !signature[:intact] } || modified
+      return 'valid_untrusted' unless signatures.all? { |signature| Qes::Validator.accepted_signature?(signature) }
       return 'valid_unqualified' if qes.empty?
-      return 'valid_untrusted' if qes.any? { |signature| !signature[:trusted] }
 
       'valid'
     end

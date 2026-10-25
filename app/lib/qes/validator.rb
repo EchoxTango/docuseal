@@ -9,16 +9,18 @@ module Qes
     def call(pdf_bytes, trust_roots: [], trusted_certs: trust_roots, at: Time.current)
       io = StringIO.new(pdf_bytes)
       signatures = signature_dicts(pdf_bytes)
-      pdfium = pdfium_report(pdf_bytes, trusted_certs)
-
-      results = signatures.map { |signature| verify_one(signature, io, trust_roots) }
+      results = signatures.map { |signature| verify_one(signature, io, trust_roots, trusted_certs:) }
+      trusted_ranges = signatures.zip(results).filter_map do |signature, result|
+        signature[:ByteRange].value if accepted_signature?(result)
+      end
+      pdfium = pdfium_report(pdf_bytes, trusted_certs, trusted_ranges:)
       qes_results = results.select { |result| result[:qes] }
       last = results.last
       level = qes_results.last ? qes_results.last[:level] : 'none'
 
       {
         ok: results.present? && results.all? { |r| r[:intact] } &&
-            qes_results.all? { |r| r[:trusted] } && last[:coverage] == 'full',
+            results.all? { |r| accepted_signature?(r) } && last[:coverage] == 'full',
         intact: results.present? && results.all? { |result| result[:intact] },
         trusted: qes_results.present? && qes_results.all? { |result| result[:trusted] },
         coverage: last ? last[:coverage] : 'none',
@@ -38,7 +40,7 @@ module Qes
       doc.signatures.to_a
     end
 
-    def verify_one(signature, io, trust_roots)
+    def verify_one(signature, io, trust_roots, trusted_certs: [])
       byte_range = signature[:ByteRange]&.value&.map(&:to_i)
       contents = signature[:Contents].to_s
       sub_filter = signature[:SubFilter].to_s
@@ -71,11 +73,18 @@ module Qes
       chain = pkcs7.certificates&.reject { |cert| cert.to_der == signer_cert&.to_der } || []
       result[:trusted] = result[:intact] && result[:qes] &&
                          trusted_chain?(signer_cert, chain, trust_roots)
+      if result[:kind] == 'seal'
+        result[:trusted] = result[:intact] && VerifyPdfSignature.trusted_certificate?(pkcs7, trusted_certs)
+      end
       result[:coverage] = coverage(io.string, signature)
 
       result
     rescue OpenSSL::PKCS7::PKCS7Error, OpenSSL::ASN1::ASN1Error
       result
+    end
+
+    def accepted_signature?(result)
+      result[:intact] && (result[:trusted] || result[:kind] == 'timestamp')
     end
 
     # `SignerInfo#signed_time` vyhodí `PKCS7Error` s prázdnou zprávou, když
@@ -168,8 +177,8 @@ module Qes
       full ? 'full' : 'partial'
     end
 
-    def pdfium_report(pdf_bytes, trusted_certs)
-      VerifyPdfSignature.call(StringIO.new(pdf_bytes), trusted_certs).map do |signature|
+    def pdfium_report(pdf_bytes, trusted_certs, trusted_ranges:)
+      VerifyPdfSignature.call(StringIO.new(pdf_bytes), trusted_certs, trusted_ranges:).map do |signature|
         {
           common_name: signature.common_name,
           signing_time: signature.signing_time&.utc&.iso8601,

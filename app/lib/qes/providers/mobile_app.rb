@@ -104,7 +104,10 @@ module Qes
       end
 
       def validate(pdf_bytes)
-        Qes::Validator.call(pdf_bytes, trust_roots:)
+        trusted_certs = Accounts.load_trusted_certs(session.account)
+        trusted_certs += [seal_pkcs.certificate] if seal_pkcs
+
+        Qes::Validator.call(pdf_bytes, trust_roots:, trusted_certs:)
       end
 
       def trust_roots
@@ -164,7 +167,8 @@ module Qes
         # k podpisu před DSS. Tady se kontroluje INTACT všech signatur a trusted
         # QES; pečeť a DocTS ověřuje `pdfium`/`seal` report.
         final_report = validate(final_pdf)
-        unless final_report[:intact] && final_report[:trusted]
+        unless final_report[:intact] && final_report[:trusted] &&
+               final_report[:signatures].all? { |result| Qes::Validator.accepted_signature?(result) }
           raise ClientError.new(:validation_failed, 'Signature validation failed')
         end
 
