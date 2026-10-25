@@ -106,7 +106,8 @@ module Qes
       end
 
       def validate(pdf_bytes)
-        trusted_certs = Accounts.load_trusted_certs(session.account)
+        # Chybějící certifikáty účtu (pečeť nenastavená) nesmí shodit dokončení.
+        trusted_certs = Qes::Verifier.trusted_certs_for(session.account)
         trusted_certs += [seal_pkcs.certificate] if seal_pkcs
 
         Qes::Validator.call(pdf_bytes, trust_roots:, trusted_certs:)
