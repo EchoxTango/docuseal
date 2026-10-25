@@ -711,6 +711,7 @@ import AccessibilityAreas from './accessibility_areas'
 import ImageStep from './image_step'
 import SignatureStep from './signature_step'
 import QesStep from './qes_step'
+import { qesFieldsLast } from './qes_step_logic.mjs'
 import InitialsStep from './initials_step'
 import AttachmentStep from './attachment_step'
 import MultiSelectStep from './multi_select_step'
@@ -1307,7 +1308,7 @@ export default {
 
       const cache = {}
 
-      return sortedFields.reduce((acc, f) => {
+      return qesFieldsLast(sortedFields).reduce((acc, f) => {
         const prevStep = acc[acc.length - 1]
 
         if (this.checkFieldConditions(f, cache) && this.checkFieldDocumentsConditions(f)) {

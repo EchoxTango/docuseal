@@ -74,7 +74,14 @@ module QesHelpers
     submission = FactoryBot.create(:submission, template:, account:)
 
     template.submitters.each do |item|
-      FactoryBot.create(:submitter, submission:, account_id: account.id, uuid: item['uuid'])
+      # Podpisové scénáře začínají s vyplněnými povinnými texty.
+      values = template.fields.each_with_object({}) do |field, acc|
+        next unless field['submitter_uuid'] == item['uuid'] && field['type'] == 'text' && field['required']
+
+        acc[field['uuid']] = 'Test signer'
+      end
+
+      FactoryBot.create(:submitter, submission:, account_id: account.id, uuid: item['uuid'], values:)
     end
 
     submission

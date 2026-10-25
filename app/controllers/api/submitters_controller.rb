@@ -164,19 +164,7 @@ module Api
     def maybe_assign_completed_attributes(submitter, attrs)
       submitter.completed_at = attrs[:completed] ? Time.current : submitter.completed_at
 
-      if attrs[:completed]
-        submitter.values = Submitters::SubmitValues.merge_default_values(submitter)
-        submitter.values = Submitters::SubmitValues.maybe_remove_condition_values(submitter)
-
-        formula_values = Submitters::SubmitValues.build_formula_values(submitter)
-
-        if formula_values.present?
-          submitter.values = submitter.values.merge(formula_values)
-          submitter.values = Submitters::SubmitValues.maybe_remove_condition_values(submitter)
-        end
-
-        submitter.values = Submitters::SubmitValues.replace_current_date_placeholders(submitter)
-      end
+      Submitters::SubmitValues.finalize_values!(submitter) if attrs[:completed]
 
       submitter
     end

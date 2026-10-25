@@ -75,7 +75,7 @@ module Qes
       QesSession.where(id: @session.id).update_all(failure_code: e.code.to_s)
       @session.reload
 
-      render_qes_error_with(e.code, :unprocessable_content)
+      render_qes_error(e)
     end
 
     def complete

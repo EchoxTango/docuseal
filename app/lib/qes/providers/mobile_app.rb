@@ -30,13 +30,18 @@ module Qes
         # CRL se stahují v controlleru před přípravou TBS; tady se jen ověří.
         Qes::Ltv.check_revoked!(certificate, chain:, crls:)
 
-        session.submitter.reload
-        values_snapshot = Qes::ValueValidator.non_qes_values(session.submitter.values, session.submitter)
+        values_snapshot = nil
+        tbs_pdf = nil
+        session.submitter.with_lock do
+          Qes::SigningValues.prepare!(session.submitter)
+          session.submitter.save!
+          values_snapshot = Qes::ValueValidator.non_qes_values(session.submitter.values, session.submitter)
 
-        tbs_pdf = Qes::TbsDocument.build(
-          session.submitter, session.field,
-          signature_size: tbs_signature_size(certificate, chain)
-        )
+          tbs_pdf = Qes::TbsDocument.build(
+            session.submitter, session.field,
+            signature_size: tbs_signature_size(certificate, chain)
+          )
+        end
 
         data = Qes::TbsDocument.signed_data(StringIO.new(tbs_pdf), Qes::TbsDocument.byte_range(tbs_pdf))
 

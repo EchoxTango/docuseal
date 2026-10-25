@@ -24,6 +24,7 @@ test('maps API error codes to i18n keys', () => {
   assert.equal(errorKey('revoked'), 'qes_error_revoked')
   assert.equal(errorKey('unknown_token'), 'qes_error_expired_token')
   assert.equal(errorKey('rate_limited'), 'qes_error_network')
+  assert.equal(errorKey('fields_incomplete'), 'qes_error_fields_incomplete')
   assert.equal(errorKey('something_new'), 'qes_error_network')
   assert.equal(ERROR_KEYS.not_trusted, 'qes_error_not_trusted')
 })

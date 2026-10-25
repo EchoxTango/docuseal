@@ -10,9 +10,15 @@ export const ERROR_KEYS = {
   not_qualified: 'qes_error_not_qualified',
   not_trusted: 'qes_error_not_trusted',
   revoked: 'qes_error_revoked',
+  fields_incomplete: 'qes_error_fields_incomplete',
   rate_limited: 'qes_error_network',
   server_error: 'qes_error_network',
   network: 'qes_error_network'
+}
+
+// Stabilní pořadí: všechna data i ověření před podpisem.
+export function qesFieldsLast (fields) {
+  return [...fields.filter((field) => field.type !== 'qes'), ...fields.filter((field) => field.type === 'qes')]
 }
 
 export const MAX_POLL_MS = 15 * 60 * 1000

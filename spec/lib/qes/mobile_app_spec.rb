@@ -24,6 +24,20 @@ RSpec.describe Qes::Providers::MobileApp do
     expect(session.completed_at).to be_nil
   end
 
+  it 'still rejects values changed after the preparation lock was released' do
+    field = session.submission.template_fields.find { |item| item['type'] == 'text' }
+    allow(Qes::CmsBuilder).to receive(:prepare).and_wrap_original do |original, **args|
+      session.submitter.update!(values: { field['uuid'] => 'Changed during preparation' })
+      original.call(**args)
+    end
+
+    expect { prepare_document }.to raise_error(Qes::ClientError) do |error|
+      expect(error.code).to eq(:values_changed)
+    end
+    expect(session.reload.state).to eq('awaiting_app')
+    expect(session.tbs_document).not_to be_attached
+  end
+
   it 'does not complete or publish documents when the configured seal fails' do
     prepare_document
     signature = pkcs.key.sign(OpenSSL::Digest.new('SHA256'), session.signed_attrs_der)

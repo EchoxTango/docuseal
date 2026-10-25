@@ -26,6 +26,10 @@ module Qes
     def render_qes_error(error)
       status = error.code == :rate_limited ? :too_many_requests : :unprocessable_content
 
+      if error.is_a?(Qes::SigningValues::IncompleteFields)
+        return render json: { error: error.code.to_s, missing_fields: error.missing_fields }, status:
+      end
+
       render_qes_error_with(error.code, status, message: error.message)
     end
 

@@ -31,6 +31,8 @@ module Qes
         return render_qes_error_with(:awaiting_previous_signer, :conflict)
       end
 
+      Qes::SigningValues.validate!(@submitter)
+
       session = nil
       token = nil
 
