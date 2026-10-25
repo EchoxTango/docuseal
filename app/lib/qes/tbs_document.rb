@@ -83,7 +83,7 @@ module Qes
       offsets = {}
       offset = 0
 
-      Qes.template_schema(submission).each do |item|
+      Submissions.filtered_conditions_schema(submission).each do |item|
         attachment = submission.schema_documents.find { |a| a.uuid == item['attachment_uuid'] }
 
         offsets[item['attachment_uuid']] = offset

@@ -12,6 +12,8 @@ module Qes
 
     def draw(pdf, submitter, field, offsets = {})
       area = field&.dig('areas', 0)
+      return if area.present? && offsets.present? && !offsets.key?(area['attachment_uuid'])
+
       page_index =
         if area.present?
           area['page'].to_i + offsets.fetch(area['attachment_uuid'], 0)
