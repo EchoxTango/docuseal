@@ -47,4 +47,21 @@ RSpec.describe 'QES views' do
     expect(response.body).to include('bg-base-200/80')
     expect(response.body).not_to include("qes:#{session.id}")
   end
+
+  it 'renders signing, completion, DocTS and validation times in the full summary' do
+    session.update!(signing_time: Time.utc(2026, 10, 25, 10), completed_at: Time.utc(2026, 10, 25, 10, 5),
+                    doc_timestamp_state: 'applied',
+                    validation_report: { intact: true, trusted: true, coverage: 'full',
+                                         signer_validation: { time_source: 'timestamp',
+                                                              validated_at_time: '2026-10-25T10:04:00Z' },
+                                         doc_timestamp: { timestamp_time: '2026-10-25T10:04:30Z' } })
+
+    get submission_path(submitter.submission)
+
+    expect(response).to have_http_status(:ok)
+    expect(response.body).to include('Signing time', 'Completed', 'Document timestamp (DocTS)',
+                                     'Validation time source', 'Verified timestamp',
+                                     '2026-10-25T10:00:00Z', '2026-10-25T10:05:00Z',
+                                     '2026-10-25T10:04:00Z', '2026-10-25T10:04:30Z')
+  end
 end

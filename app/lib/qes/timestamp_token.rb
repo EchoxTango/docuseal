@@ -16,16 +16,24 @@ module Qes
     # s TIMESTAMP_SIGN; NOVERIFY přeskočí jen tuto duplicitní S/MIME kontrolu.
     # Ověří podpis tokenu a jeho imprint proti `data` (signed data podpisu).
     def verify(pkcs7, data, trust_roots: Qes.tsa_trust_roots, at: Time.current)
+      return false unless intact?(pkcs7, data)
+
+      token_info = OpenSSL::Timestamp::TokenInfo.new(tst_info_der(pkcs7))
+
+      return false if token_info.gen_time > at + CLOCK_SKEW
+      trusted_signer?(pkcs7, token_info, trust_roots)
+    rescue OpenSSL::Timestamp::TimestampError, OpenSSL::ASN1::ASN1Error, ArgumentError, TypeError
+      false
+    end
+
+    # Starší revize při dokončení vyžadují podpis a imprint, nikoli dnešní trust TSA.
+    def intact?(pkcs7, data)
       return false unless pkcs7.verify(pkcs7.certificates, OpenSSL::X509::Store.new, nil,
                                      OpenSSL::PKCS7::NOVERIFY | OpenSSL::PKCS7::BINARY)
 
       token_info = OpenSSL::Timestamp::TokenInfo.new(tst_info_der(pkcs7))
 
-      return false if token_info.gen_time > at + CLOCK_SKEW
-      return false unless token_info.message_imprint == OpenSSL::Digest.digest(token_info.algorithm, data)
-      return true if trust_roots.empty? && Qes::Config[:tsa_trust_roots].blank?
-
-      trusted_signer?(pkcs7, token_info, trust_roots)
+      token_info.message_imprint == OpenSSL::Digest.digest(token_info.algorithm, data)
     rescue OpenSSL::PKCS7::PKCS7Error, OpenSSL::Timestamp::TimestampError,
            OpenSSL::ASN1::ASN1Error, OpenSSL::X509::CertificateError, ArgumentError, TypeError
       false

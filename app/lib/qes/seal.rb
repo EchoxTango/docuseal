@@ -2,11 +2,16 @@
 
 module Qes
   # Pečeť DocuSealu: druhá inkrementální signatura **až po** podpisu appky
-  # (SPEC § 7.6). Podpis appky zůstává INTACT; při chybě se pečeť přeskočí.
+  # (SPEC § 7.6). Podpis appky zůstává INTACT; chybu řeší dokončení obřadu.
   module Seal
     module_function
 
     def apply(pdf_bytes, account, submitter:, pkcs: nil)
+      unless pkcs || Docuseal.multitenant? || Docuseal::CERTS.present? ||
+             EncryptedConfig.exists?(key: EncryptedConfig::ESIGN_CERTS_KEY)
+        return [pdf_bytes, 'none']
+      end
+
       pkcs ||= Accounts.load_signing_pkcs(account)
       return [pdf_bytes, 'failed'] if pkcs.blank?
 

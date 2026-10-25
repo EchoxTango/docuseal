@@ -51,6 +51,83 @@ RSpec.describe 'Qes sessions API', type: :request do
     expect(response.parsed_body['error']).to eq('unknown_token')
   end
 
+  it 'keeps an awaiting signature session and returns its polling id without a new token' do
+    session, submitter = create_qes_session(token: 'in-progress')
+    session.update!(state: 'awaiting_signature')
+    digest = session.token_digest
+
+    expect do
+      post "/s/#{submitter.slug}/qes_sessions", params: { field_uuid: session.field_uuid }
+    end.not_to change(QesSession, :count)
+
+    expect(response).to have_http_status(:conflict)
+    expect(response.parsed_body).to include('error' => 'signature_in_progress', 'id' => session.id,
+                                            'session_id' => session.id, 'state' => 'awaiting_signature')
+    expect(response.parsed_body).not_to have_key('token')
+    expect(session.reload.state).to eq('awaiting_signature')
+    expect(session.token_digest).to eq(digest)
+  end
+
+  %w[awaiting_app app_opened].each do |state|
+    it "replaces an abandoned #{state} session" do
+      session, submitter = create_qes_session(token: 'replace')
+      session.update!(state:)
+
+      post "/s/#{submitter.slug}/qes_sessions", params: { field_uuid: session.field_uuid }
+
+      expect(response).to have_http_status(:created)
+      expect(response.parsed_body['id']).not_to eq(session.id)
+      expect(session.reload.state).to eq('cancelled')
+    end
+  end
+
+  it 'does not cancel an awaiting signature for another field' do
+    submission = QesHelpers.build_qes_submission(qes_fields_per_submitter: 2)
+    submitter = submission.submitters.first
+    first_field, second_field = Qes.template_fields(submission).select { |field| field['type'] == 'qes' }
+    session = create(:qes_session, submitter:, field_uuid: first_field['uuid'], state: 'awaiting_signature')
+
+    post "/s/#{submitter.slug}/qes_sessions", params: { field_uuid: second_field['uuid'] }
+
+    expect(response).to have_http_status(:created)
+    expect(session.reload.state).to eq('awaiting_signature')
+  end
+
+  it 'allows retrying completion after seal_failed and exposes both finishing states' do
+    session, _submitter = create_qes_session(token: 'retry-seal')
+    allow(Qes::Ltv).to receive(:fetch_crls).and_return([])
+    post '/qes/sessions/retry-seal/certificate', params: {
+      certificate: Base64.strict_encode64(pkcs.certificate.to_der),
+      chain: (pkcs.ca_certs || []).map { |cert| Base64.strict_encode64(cert.to_der) }
+    }
+    expect(response).to have_http_status(:ok)
+    signature = pkcs.key.sign(OpenSSL::Digest.new('SHA256'), session.reload.signed_attrs_der)
+    attempts = 0
+    allow(Qes::Seal).to receive(:apply).and_wrap_original do |original, pdf, *args, **kwargs|
+      attempts += 1
+      attempts == 1 ? [pdf, 'failed'] : original.call(pdf, *args, **kwargs)
+    end
+
+    post '/qes/sessions/retry-seal/complete', params: { signature: Base64.strict_encode64(signature) }
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.parsed_body['error']).to eq('seal_failed')
+    expect(session.reload.state).to eq('awaiting_signature')
+    expect(session.failure_code).to eq('seal_failed')
+    expect(session.failed_at).to be_nil
+    expect(session.final_document).not_to be_attached
+
+    post '/qes/sessions/retry-seal/complete', params: { signature: Base64.strict_encode64(signature) }
+
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body).to include('state' => 'completed', 'seal_state' => 'applied',
+                                            'doc_timestamp_state' => 'none',
+                                            'signing_time' => session.signing_time.utc.iso8601)
+    expect(session.reload.failure_code).to be_nil
+    get "/s/#{session.submitter.slug}/qes_sessions/#{session.id}", headers: { 'Accept' => 'application/json' }
+    expect(response.parsed_body).to include('seal_state' => 'applied', 'doc_timestamp_state' => 'none')
+  end
+
   it 'returns 410 for an expired token' do
     _session, _submitter = create_qes_session(token: 'expired', expires_at: 1.minute.ago)
 
@@ -131,9 +208,16 @@ RSpec.describe 'Qes sessions API', type: :request do
 
   it 'rejects a certificate that is not qualified' do
     _session, _submitter = create_qes_session(token: 'unqualified')
+    key, certificate = QesHelpers.self_signed_qc_sscd_certificate
+    certificate.extensions = certificate.extensions.reject do |extension|
+      [Qes::CertificateInfo::QC_STATEMENTS_OID, 'qcStatements'].include?(extension.oid)
+    end
+    certificate.sign(key, OpenSSL::Digest.new('SHA256'))
+    allow(Qes).to receive(:trust_roots).and_return([certificate])
+    allow(Qes::Ltv).to receive(:fetch_crls).and_return([])
 
     post '/qes/sessions/unqualified/certificate', params: {
-      certificate: Base64.strict_encode64(QesHelpers.unqualified_certificate.to_der),
+      certificate: Base64.strict_encode64(certificate.to_der),
       chain: [],
       key_location: 'phone_keystore'
     }
@@ -213,6 +297,30 @@ RSpec.describe 'Qes sessions API', type: :request do
 
     expect(response).to have_http_status(:unprocessable_content)
     expect(response.parsed_body['error']).to eq('tsa_unavailable')
+    expect(session.reload.state).not_to eq('completed')
+    expect(session.final_document).not_to be_attached
+  end
+
+  it 'reports a clear configuration error when the TSA URL has no trust roots' do
+    session, _submitter = create_qes_session(token: 'unconfigured-tsa-trust')
+    allow(Qes::Ltv).to receive(:fetch_crls).and_return([])
+    post '/qes/sessions/unconfigured-tsa-trust/certificate', params: {
+      certificate: Base64.strict_encode64(pkcs.certificate.to_der),
+      chain: (pkcs.ca_certs || []).map { |cert| Base64.strict_encode64(cert.to_der) },
+      key_location: 'phone_keystore'
+    }
+    expect(response).to have_http_status(:ok)
+    signature = pkcs.key.sign(OpenSSL::Digest.new('SHA256'),
+                              Base64.strict_decode64(response.parsed_body['data_to_sign']))
+    Qes::Config[:tsa_url] = 'http://tsa.test'
+
+    post '/qes/sessions/unconfigured-tsa-trust/complete', params: {
+      signature: Base64.strict_encode64(signature)
+    }
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.parsed_body['error']).to eq('tsa_trust_not_configured')
+    expect(response.parsed_body['message']).to include('QES_TSA_TRUST_ROOTS')
     expect(session.reload.state).not_to eq('completed')
     expect(session.final_document).not_to be_attached
   end
@@ -301,6 +409,7 @@ RSpec.describe 'Qes sessions API', type: :request do
   it 'rejects a self-signed QcSSCD certificate that does not chain to a trust root' do
     _session, _submitter = create_qes_session(token: 'selfsigned', level: 'qes')
     _key, cert = QesHelpers.self_signed_qc_sscd_certificate
+    expect(Qes::Ltv).not_to receive(:fetch_crls)
 
     post '/qes/sessions/selfsigned/certificate', params: {
       certificate: Base64.strict_encode64(cert.to_der),
@@ -310,6 +419,27 @@ RSpec.describe 'Qes sessions API', type: :request do
 
     expect(response).to have_http_status(:unprocessable_content)
     expect(response.parsed_body['error']).to eq('not_trusted')
+  end
+
+  it 'validates the certificate chain before fetching its CRLs' do
+    create_qes_session(token: 'chain-first')
+    verified = false
+    allow(Qes::Validator).to receive(:verify_chain!).and_wrap_original do |original, *args|
+      original.call(*args)
+      verified = true
+      nil
+    end
+    expect(Qes::Ltv).to receive(:fetch_crls) do
+      expect(verified).to be true
+      []
+    end
+
+    post '/qes/sessions/chain-first/certificate', params: {
+      certificate: Base64.strict_encode64(pkcs.certificate.to_der),
+      chain: (pkcs.ca_certs || []).map { |cert| Base64.strict_encode64(cert.to_der) }
+    }
+
+    expect(response).to have_http_status(:ok)
   end
 
   it 'clears the failure code when a rejected certificate is followed by a valid one' do

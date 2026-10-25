@@ -34,7 +34,7 @@ RSpec.describe Qes::Validator do
     [key, cert]
   end
 
-  def make_leaf(issuer_cert, issuer_key)
+  def make_leaf(issuer_cert, issuer_key, eku: nil)
     key = OpenSSL::PKey::RSA.new(2048)
     cert = OpenSSL::X509::Certificate.new
     cert.version = 2
@@ -48,6 +48,7 @@ RSpec.describe Qes::Validator do
     factory.subject_certificate = cert
     factory.issuer_certificate = issuer_cert
     cert.add_extension(factory.create_extension('keyUsage', 'digitalSignature', true))
+    cert.add_extension(factory.create_extension('extendedKeyUsage', eku)) if eku
     cert.sign(issuer_key, OpenSSL::Digest.new('SHA256'))
 
     [key, cert]
@@ -61,6 +62,73 @@ RSpec.describe Qes::Validator do
     expect(described_class.trusted_chain?(leaf, [int_cert], [root])).to be true
     expect(described_class.trusted_chain?(leaf, [], [root])).to be false
     expect(described_class.trusted_chain?(leaf, [int_cert], [])).to be false
+  end
+
+  it 'trusts a signing certificate with clientAuth instead of emailProtection' do
+    root_key, root = make_ca('/CN=Signing Root', nil, nil)
+    key, leaf = make_leaf(root, root_key, eku: 'clientAuth')
+    pkcs = OpenSSL::PKCS12.create('test', 'client-auth', key, leaf, [root])
+
+    expect(described_class.trusted_chain?(leaf, [], [root])).to be true
+    expect(described_class.call(QesHelpers.signed_pdf(pkcs:), trust_roots: [root])[:ok]).to be true
+    expect(described_class.trusted_chain?(leaf, [], [root], at: leaf.not_after + 1)).to be false
+  end
+
+  it 'does not accept a document containing only a trusted seal' do
+    pdf = HexaPDF::Document.new
+    pdf.pages.add
+    output = StringIO.new
+    pkcs = QesHelpers.pkcs12
+    pdf.sign(output, certificate: pkcs.certificate, key: pkcs.key, write_options: { validate: false })
+
+    report = described_class.call(output.string, trusted_certs: [pkcs.certificate])
+
+    expect(report[:signatures].first).to include(kind: 'seal', intact: true, trusted: true)
+    expect(report[:ok]).to be false
+  end
+
+  it 'does not accept a document containing only a valid DocTS' do
+    pdf = HexaPDF::Document.new
+    pdf.pages.add
+    output = StringIO.new
+    pdf.write(output)
+    allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
+    stub_tsa!
+    stamped, state = Qes::DocTimestamp.apply(output.string, tsa_url: 'http://tsa.test')
+
+    expect(state).to eq('applied')
+    report = described_class.call(stamped)
+    expect(report[:intact]).to be true
+    expect(report[:signatures].first).to include(kind: 'timestamp', tsa_trusted: true)
+    expect(report[:ok]).to be false
+  end
+
+  it 'still rejects an untrusted current signer when validation is scoped to completion' do
+    pdf = QesHelpers.signed_pdf(pkcs: QesHelpers.self_signed_pkcs12)
+    report = described_class.call(pdf, trust_roots: QesHelpers.trust_roots,
+                                       current_signature_range: Qes::TbsDocument.byte_range(pdf))
+
+    expect(report[:intact]).to be true
+    expect(report[:trusted]).to be false
+    expect(report[:ok]).to be false
+  end
+
+  it 'rejects a broken old timestamp imprint even when the current signature is intact' do
+    token = QesHelpers.build_timestamp_token(OpenSSL::Digest.digest('SHA256', 'another document'),
+                                             key: QesHelpers.tsa_key, certificate: QesHelpers.tsa_certificate)
+    stamped = QesHelpers.append_timestamp(QesHelpers.signed_pdf, token:)
+    document = HexaPDF::Document.new(io: StringIO.new(stamped))
+    output = StringIO.new
+    pkcs = QesHelpers.pkcs12
+    document.sign(output, certificate: pkcs.certificate, key: pkcs.key, signature_type: :pades,
+                          certificate_chain: pkcs.ca_certs, write_options: { validate: false })
+    report = described_class.call(output.string, trust_roots: QesHelpers.trust_roots,
+                                                 current_signature_range: Qes::TbsDocument.byte_range(output.string))
+
+    expect(report[:signatures].last).to include(intact: true, trusted: true, verification_scope: 'full')
+    expect(report[:signatures].find { |s| s[:kind] == 'timestamp' })
+      .to include(intact: false, verification_scope: 'integrity')
+    expect(report[:ok]).to be false
   end
 
   describe 'historical chain validation' do
@@ -87,9 +155,7 @@ RSpec.describe Qes::Validator do
     end
 
     it 'uses a verified signature timestamp after the signing certificate expires' do
-      allow_any_instance_of(Submissions::TimestampHandler).to receive(:sign) do |_handler, io, byte_range|
-        QesHelpers.timestamp_token(io, byte_range)
-      end
+      stub_tsa!
       pdf = QesHelpers.signed_pdf(pkcs:, tsa_url: 'http://tsa.test')
       report = described_class.call(pdf, trust_roots: [root], at: later)
       signature = report[:signatures].first
@@ -101,9 +167,7 @@ RSpec.describe Qes::Validator do
 
     it 'uses a later covering DocTS after both the signer and TSA certificate expire' do
       pdf = QesHelpers.signed_pdf(pkcs:)
-      allow_any_instance_of(Qes::DocTimestamp::Handler).to receive(:sign) do |_handler, io, byte_range|
-        QesHelpers.timestamp_token(io, byte_range)
-      end
+      stub_tsa!
       stamped, state = Qes::DocTimestamp.apply(pdf, tsa_url: 'http://tsa.test')
       expect(state).to eq('applied')
 
@@ -116,9 +180,7 @@ RSpec.describe Qes::Validator do
 
     it 'keeps an earlier expired signer trusted when a new signer appends a signature' do
       pdf = QesHelpers.signed_pdf(pkcs:)
-      allow_any_instance_of(Qes::DocTimestamp::Handler).to receive(:sign) do |_handler, io, byte_range|
-        QesHelpers.timestamp_token(io, byte_range)
-      end
+      stub_tsa!
       stamped, state = Qes::DocTimestamp.apply(pdf, tsa_url: 'http://tsa.test')
       expect(state).to eq('applied')
 
@@ -142,9 +204,7 @@ RSpec.describe Qes::Validator do
       document.pages.add
       output = StringIO.new
       document.write(output)
-      allow_any_instance_of(Qes::DocTimestamp::Handler).to receive(:sign) do |_handler, io, byte_range|
-        QesHelpers.timestamp_token(io, byte_range)
-      end
+      stub_tsa!
       stamped, state = Qes::DocTimestamp.apply(output.string, tsa_url: 'http://tsa.test')
       expect(state).to eq('applied')
       document = HexaPDF::Document.new(io: StringIO.new(stamped))
@@ -158,23 +218,43 @@ RSpec.describe Qes::Validator do
       expect(report[:signatures].last).to include(time_source: 'current', trusted: false)
     end
 
-    it 'does not use an untrusted timestamp to restore an expired certificate' do
-      allow_any_instance_of(Submissions::TimestampHandler).to receive(:sign) do |_handler, io, byte_range|
-        QesHelpers.timestamp_token(io, byte_range)
+    [false, true].each do |roots_configured|
+      it "ignores untrusted signature timestamp time (TSA roots configured=#{roots_configured})" do
+        stub_tsa!
+        pdf = QesHelpers.signed_pdf(pkcs:, tsa_url: 'http://tsa.test')
+        allow(Qes).to receive(:tsa_trust_roots).and_return(roots_configured ? [root] : [])
+
+        report = described_class.call(pdf, trust_roots: [root], at: later)
+
+        expect(report[:intact]).to be true
+        expect(report[:trusted]).to be false
+        expect(report[:ok]).to be false
+        expect(report[:signatures].first).to include(time_source: 'current', tsa_trusted: false,
+                                                     validated_at_time: later.utc.iso8601)
       end
-      pdf = QesHelpers.signed_pdf(pkcs:, tsa_url: 'http://tsa.test')
-      allow(Qes).to receive(:tsa_trust_roots).and_return([root])
 
-      report = described_class.call(pdf, trust_roots: [root], at: later)
+      it "ignores untrusted covering DocTS time (TSA roots configured=#{roots_configured})" do
+        stamped = QesHelpers.append_timestamp(QesHelpers.signed_pdf(pkcs:),
+                                               certificate: QesHelpers.self_signed_tsa_certificate)
+        allow(Qes).to receive(:tsa_trust_roots).and_return(roots_configured ? [root] : [])
 
-      expect(report[:trusted]).to be false
-      expect(report[:signatures].first).to include(time_source: 'current', tsa_trusted: false)
+        report = described_class.call(stamped, trust_roots: [root], at: later)
+
+        expect(report[:intact]).to be true
+        expect(report[:trusted]).to be false
+        expect(report[:ok]).to be false
+        expect(report[:signatures].first).to include(time_source: 'current', trusted: false,
+                                                     validated_at_time: later.utc.iso8601)
+        expect(report[:signatures].last).to include(intact: true, tsa_trusted: false,
+                                                    timestamp_time: nil, time_source: 'current')
+        expect(described_class.accepted_signature?(report[:signatures].last)).to be false
+      end
     end
 
     it 'does not use a timestamp whose imprint belongs to another signature' do
       token = QesHelpers.build_timestamp_token(OpenSSL::Digest.digest('SHA256', 'other signature'),
                                                key: QesHelpers.tsa_key, certificate: QesHelpers.tsa_certificate)
-      allow_any_instance_of(Submissions::TimestampHandler).to receive(:sign).and_return(token)
+      stub_request(:post, 'http://tsa.test').to_return(status: 200, body: QesHelpers.timestamp_response(token))
       pdf = QesHelpers.signed_pdf(pkcs:, tsa_url: 'http://tsa.test')
 
       report = described_class.call(pdf, trust_roots: [root], at: later)

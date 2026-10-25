@@ -28,6 +28,53 @@ RSpec.describe 'QES chained signatures' do
     [submission.submitters.order(:id).to_a[index], session.reload]
   end
 
+  it 'completes a later signer when an intact earlier DocTS is no longer trusted' do
+    allow(Qes::Ltv).to receive(:fetch_crls).and_return([])
+    Qes::Config[:tsa_url] = 'http://tsa.test'
+    old_certificate = QesHelpers.self_signed_tsa_certificate
+    allow(Qes).to receive(:tsa_trust_roots).and_return([old_certificate])
+    stub_tsa!(certificate: old_certificate)
+    submission = QesHelpers.build_qes_submission(count: 2)
+    _first, first_session = sign!(submission, 0)
+    allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
+    stub_tsa!
+
+    _second, second_session = sign!(submission, 1)
+
+    expect(second_session.state).to eq('completed')
+    expect(second_session.doc_timestamp_state).to eq('applied')
+    expect(second_session.validation_report['validation_scope']).to eq('current_revision')
+    old_timestamp = second_session.validation_report['signatures'].find { |s| s['kind'] == 'timestamp' }
+    expect(old_timestamp).to include('intact' => true, 'tsa_trusted' => false, 'verification_scope' => 'integrity')
+    expect(old_timestamp['timestamp_time']).to be_nil
+    expect(Qes::Validator.accepted_signature?(old_timestamp.symbolize_keys)).to be false
+    expect(second_session.validation_report['doc_timestamp']).to include('tsa_trusted' => true,
+                                                                         'verification_scope' => 'full')
+    expect(second_session.validation_report['doc_timestamp']['timestamp_time']).to be_present
+    expect(second_session.validation_report['signer_validation']).to include('time_source' => 'timestamp')
+    expect(second_session.tbs_document.download).to start_with(first_session.final_document.download)
+
+    # Běžný veřejný validátor nadále vyžaduje důvěryhodnost všech revizí.
+    report = Qes::Validator.call(second_session.final_document.download, trust_roots: QesHelpers.trust_roots)
+    expect(report[:ok]).to be false
+  end
+
+  it 'rejects an untrusted new DocTS while completing a later signer' do
+    allow(Qes::Ltv).to receive(:fetch_crls).and_return([])
+    submission = QesHelpers.build_qes_submission(count: 2)
+    sign!(submission, 0)
+    Qes::Config[:tsa_url] = 'http://tsa.test'
+    allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
+    stub_tsa!
+    allow(Qes::DocTimestamp).to receive(:apply) do |pdf, **|
+      [QesHelpers.append_timestamp(pdf, certificate: QesHelpers.self_signed_tsa_certificate), 'applied']
+    end
+
+    expect { sign!(submission, 1) }
+      .to raise_error(Qes::ClientError) { |error| expect(error.code).to eq(:validation_failed) }
+    expect(QesSession.completed.where(submission:).count).to eq(1)
+  end
+
   it 'chains the next TBS on the previous final document and keeps all signatures intact' do
     QesHelpers.with_crl_server do
       submission = QesHelpers.build_qes_submission(count: 2)

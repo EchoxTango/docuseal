@@ -5,7 +5,10 @@ require 'rails_helper'
 # Dokumentový timestamp (PAdES-LTA, SPEC § 7.6): nová inkrementální revize
 # s `DocTimeStamp`/`ETSI.RFC3161`; kryje DSS i pečeť.
 RSpec.describe Qes::DocTimestamp do
-  before { QesHelpers.configure! }
+  before do
+    QesHelpers.configure!
+    allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
+  end
 
   def blank_pdf
     pdf = HexaPDF::Document.new
@@ -30,9 +33,15 @@ RSpec.describe Qes::DocTimestamp do
 
   it 'rejects a token from a TSA outside the configured trust roots' do
     allow(Qes).to receive(:tsa_trust_roots).and_return(QesHelpers.trust_roots)
-    allow_any_instance_of(Submissions::TimestampHandler).to receive(:sign) do |_handler, io, byte_range|
-      QesHelpers.timestamp_token(io, byte_range)
-    end
+    stub_tsa!
+    pdf = blank_pdf
+
+    expect(described_class.apply(pdf, tsa_url: 'http://tsa.test')).to eq([pdf, 'failed'])
+  end
+
+  it 'rejects an intact token when TSA trust roots are absent' do
+    allow(Qes).to receive(:tsa_trust_roots).and_return([])
+    stub_tsa!
     pdf = blank_pdf
 
     expect(described_class.apply(pdf, tsa_url: 'http://tsa.test')).to eq([pdf, 'failed'])
@@ -40,10 +49,9 @@ RSpec.describe Qes::DocTimestamp do
 
   it 'adds a DocTimeStamp signature in a new revision' do
     pdf = blank_pdf
-    token = File.binread(QesHelpers::TEST_DIR.join('fixtures', 'digicert-token.der'))
-    allow_any_instance_of(Qes::DocTimestamp::Handler).to receive(:sign).and_return(token)
+    stub_tsa!
 
-    result, state = described_class.apply(pdf, tsa_url: 'http://timestamp.digicert.com')
+    result, state = described_class.apply(pdf, tsa_url: 'http://tsa.test')
 
     expect(state).to eq('applied')
     expect(result.byteslice(0, pdf.bytesize)).to eq(pdf)
@@ -52,6 +60,8 @@ RSpec.describe Qes::DocTimestamp do
 
     expect(signature[:Type]).to eq(:DocTimeStamp)
     expect(signature[:SubFilter]).to eq(:'ETSI.RFC3161')
+    data = Qes::TbsDocument.signed_data(StringIO.new(result), signature[:ByteRange].value)
+    expect(Qes::TimestampToken.verify(OpenSSL::PKCS7.new(signature[:Contents].to_s), data)).to be true
   end
 
   it 'returns failed when the TSA is unavailable' do
@@ -66,9 +76,8 @@ RSpec.describe Qes::DocTimestamp do
 
   it 'rejects the fake GeneralizedTime token from the upstream handler' do
     pdf = blank_pdf
-    allow_any_instance_of(Submissions::TimestampHandler).to receive(:sign) do
-      OpenSSL::ASN1::GeneralizedTime.new(Time.now.utc).to_der
-    end
+    stub_request(:post, 'http://timestamp.test')
+      .to_return(status: 200, body: OpenSSL::ASN1::GeneralizedTime.new(Time.now.utc).to_der)
 
     _result, state = described_class.apply(pdf, tsa_url: 'http://timestamp.test')
 
@@ -77,10 +86,10 @@ RSpec.describe Qes::DocTimestamp do
 
   it 'rejects a token issued for another document' do
     pdf = blank_pdf
-    token = File.binread(QesHelpers::TEST_DIR.join('fixtures', 'digicert-token.der'))
-    response = instance_double(Faraday::Response, status: 200, body: token)
-    connection = instance_double(Faraday::Connection, post: response)
-    allow(Faraday).to receive(:new).and_return(connection)
+    token = QesHelpers.build_timestamp_token(OpenSSL::Digest.digest('SHA256', 'another document'),
+                                             key: QesHelpers.tsa_key, certificate: QesHelpers.tsa_certificate)
+    stub_request(:post, 'http://timestamp.test')
+      .to_return(status: 200, body: QesHelpers.timestamp_response(token))
 
     _result, state = described_class.apply(pdf, tsa_url: 'http://timestamp.test')
 

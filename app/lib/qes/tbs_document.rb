@@ -108,6 +108,8 @@ module Qes
 
     # Vrátí data pokrytá `/ByteRange` podpisu (to, co se podepisuje).
     def signed_data(io, byte_range)
+      raise ClientError.new(:invalid_pdf, 'Missing signature byte range') if byte_range.nil?
+
       byte_range.each_slice(2).map do |offset, length|
         io.seek(offset)
         io.read([length, io.size - offset].min)
@@ -118,7 +120,10 @@ module Qes
       doc = HexaPDF::Document.new(io: StringIO.new(pdf_bytes))
       signature = doc.signatures.to_a.find { |sig| doc.revisions.current.object(sig) == sig }
 
-      signature&.[](:ByteRange)&.value&.map(&:to_i)
+      range = signature&.[](:ByteRange)&.value&.map(&:to_i)
+      raise ClientError.new(:invalid_pdf, 'Missing signature byte range') if range.nil?
+
+      range
     end
 
     def document_digest(pdf_bytes, algorithm: 'sha256')

@@ -1201,6 +1201,8 @@ en: &en
       signing_context_mismatch: The signed attributes do not match.
       ltv_unavailable: Revocation information is not available.
       validation_failed: The signature could not be validated.
+      tsa_trust_not_configured: Timestamp authority trust roots are missing. Configure QES_TSA_TRUST_ROOTS.
+      seal_failed: The document seal failed. Retry completion with the same signature.
       prepare_failed: The signing session could not be prepared.
       network: Connection error. Try again.
       invalid_pdf: The file is not a valid PDF.
@@ -1221,6 +1223,14 @@ en: &en
       level: Level
       key_location: Key location
       signed_at: Signed at
+      signing_time: Signing time
+      completed_at: Completed
+      doc_timestamp: Document timestamp (DocTS)
+      doc_timestamp_time: Document timestamp time
+      validation_time: Certificate validation time
+      time_source: Validation time source
+      time_source_timestamp: Verified timestamp
+      time_source_current: Current time
       document_digest: Document digest
       signed_pdf_sha256: Signed PDF SHA-256
       final_pdf_sha256: Final PDF SHA-256
@@ -7502,6 +7512,8 @@ cs:
       signing_context_mismatch: Podepsané atributy se neshodují.
       ltv_unavailable: Revokační informace nejsou dostupné.
       validation_failed: Podpis se nepodařilo ověřit.
+      tsa_trust_not_configured: Chybí důvěryhodné kořenové certifikáty časové autority. Nastavte QES_TSA_TRUST_ROOTS.
+      seal_failed: Pečeť dokumentu se nepodařilo přidat. Zopakujte dokončení se stejným podpisem.
       prepare_failed: Podpisovou session se nepodařilo připravit.
       network: Chyba připojení. Zkuste to znovu.
       invalid_pdf: Soubor není platné PDF.
@@ -7519,6 +7531,14 @@ cs:
       level: Úroveň
       key_location: Umístění klíče
       signed_at: Podepsáno
+      signing_time: Čas podpisu
+      completed_at: Dokončeno
+      doc_timestamp: Dokumentové razítko (DocTS)
+      doc_timestamp_time: Čas dokumentového razítka
+      validation_time: Čas ověření certifikátu
+      time_source: Zdroj času validace
+      time_source_timestamp: Ověřené časové razítko
+      time_source_current: Aktuální čas
       document_digest: Otisk dokumentu
       signed_pdf_sha256: SHA-256 podepsaného PDF
       final_pdf_sha256: SHA-256 finálního PDF

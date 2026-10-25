@@ -6,7 +6,8 @@ module Qes
   module Validator
     module_function
 
-    def call(pdf_bytes, trust_roots: [], trusted_certs: trust_roots, at: Time.current)
+    def call(pdf_bytes, trust_roots: [], trusted_certs: trust_roots, at: Time.current,
+             current_signature_range: nil)
       io = StringIO.new(pdf_bytes)
       signatures = signature_dicts(pdf_bytes)
       timestamps = document_timestamps(signatures, io, at:)
@@ -17,12 +18,16 @@ module Qes
           time if signed_end && range[1] >= signed_end
         end.min
 
-        verify_one(signature, io, trust_roots, trusted_certs:, at:, timestamp_time:)
+        historical = current_signature_range && signed_end &&
+                     signed_end < current_signature_range[2] + current_signature_range[3]
+
+        verify_one(signature, io, trust_roots, trusted_certs:, at:, timestamp_time:, historical:)
       end
       trusted_ranges = signatures.zip(results).filter_map do |signature, result|
         signature[:ByteRange].value if accepted_signature?(result)
       end
-      pdfium = pdfium_report(pdf_bytes, trusted_certs, trusted_ranges:)
+      pdfium = pdfium_report(pdf_bytes, trusted_certs, trusted_ranges:,
+                            allow_dss_changes: current_signature_range.present?)
       inspection = if pdfium && pdfium.size == results.size && pdfium.all? { |signature| signature[:verified] }
                      'complete'
                    else
@@ -30,14 +35,20 @@ module Qes
                    end
       pdfium ||= []
       qes_results = results.select { |result| result[:qes] }
+      current_qes = qes_results.reject { |result| result[:verification_scope] == 'integrity' }
+      current_present = current_signature_range.nil? || signatures.zip(results).any? do |signature, result|
+        result[:qes] && signature[:ByteRange]&.value == current_signature_range
+      end
       last = results.last
       level = qes_results.last ? qes_results.last[:level] : 'none'
 
       {
         ok: inspection == 'complete' && !pdfium.any? { |signature| signature[:modified] } &&
-            results.present? && results.all? { |r| accepted_signature?(r) } && last[:coverage] == 'full',
+            qes_results.present? && current_present && results.all? { |r| valid_for_scope?(r) } &&
+            last[:coverage] == 'full',
         intact: results.present? && results.all? { |result| result[:intact] },
-        trusted: qes_results.present? && qes_results.all? { |result| result[:trusted] },
+        trusted: current_present && current_qes.present? && current_qes.all? { |result| result[:trusted] },
+        validation_scope: current_signature_range ? 'current_revision' : 'document',
         coverage: last ? last[:coverage] : 'none',
         level:,
         modified: pdfium.any? { |signature| signature[:modified] },
@@ -56,7 +67,8 @@ module Qes
       doc.signatures.to_a
     end
 
-    def verify_one(signature, io, trust_roots, trusted_certs: [], at: Time.current, timestamp_time: nil)
+    def verify_one(signature, io, trust_roots, trusted_certs: [], at: Time.current, timestamp_time: nil,
+                   historical: false)
       byte_range = signature[:ByteRange]&.value&.map(&:to_i)
       contents = signature[:Contents].to_s
       sub_filter = signature[:SubFilter].to_s
@@ -65,6 +77,7 @@ module Qes
                  signing_time: nil, common_name: nil, subject: nil, issuer: nil, serial: nil,
                  not_before: nil, not_after: nil, chain: [], level: 'none',
                  intact: false, trusted: false, tsa_trusted: false, coverage: 'none',
+                 verification_scope: historical ? 'integrity' : 'full', timestamp_time: nil,
                  validated_at_time: at.utc.iso8601, time_source: 'current' }
 
       return result unless valid_byte_range?(io.string, signature)
@@ -82,16 +95,17 @@ module Qes
       result[:chain] = pkcs7.certificates&.map { |cert| cert.subject.to_s } || []
       result[:signing_time] = signing_time(pkcs7)
       result[:level] = signer_cert ? Qes::CertificateInfo.new(signer_cert).level : 'none'
-      result[:intact] = verify_cms(pkcs7, data, trust_roots, sub_filter, at:)
+      result[:intact] = verify_cms(pkcs7, data, trust_roots, sub_filter)
       evidence_time = if result[:kind] == 'timestamp'
                         Qes::TimestampToken.verified_time(pkcs7, data, at:)
                       else
                         [timestamp_time, Qes::TimestampToken.signature_time(pkcs7, at:)].compact.min
                       end
       validation_time = evidence_time || at
+      result[:timestamp_time] = evidence_time&.utc&.iso8601 if result[:kind] == 'timestamp'
       result[:validated_at_time] = validation_time.utc.iso8601
       result[:time_source] = evidence_time ? 'timestamp' : 'current'
-      result[:tsa_trusted] = evidence_time.present? && Qes.tsa_trust_roots.any?
+      result[:tsa_trusted] = evidence_time.present?
       # Trust roots QES se vztahují jen na podpisy appky (CAdES); pečeť
       # DocuSealu (adbe.pkcs7.detached) se ověřuje vlastním certem účtu.
       # Ze řetězu se musí vynechat cert podepisujícího, jinak by se
@@ -126,7 +140,23 @@ module Qes
     end
 
     def accepted_signature?(result)
-      result[:intact] && (result[:trusted] || result[:kind] == 'timestamp')
+      return result[:intact] && result[:tsa_trusted] if result[:kind] == 'timestamp'
+
+      if result[:verification_scope] == 'integrity'
+        return result[:intact] && result[:kind].in?(%w[qes seal])
+      end
+
+      result[:intact] && result[:trusted]
+    end
+
+    # B4-8: starší DocTS při dokončení vyžaduje pouze integritu. Tato výjimka
+    # mu nedává právo posunout hranici změn ani poskytnout historický čas.
+    def valid_for_scope?(result)
+      if result[:verification_scope] == 'integrity' && result[:kind] == 'timestamp'
+        return result[:intact]
+      end
+
+      accepted_signature?(result)
     end
 
     # `SignerInfo#signed_time` vyhodí `PKCS7Error` s prázdnou zprávou, když
@@ -154,16 +184,16 @@ module Qes
 
     # Kryptografie je v `VerifyPdfSignature` (jeden zdroj pravdy pro pečeť i
     # QES podpisy); tady se jen rozlišuje DocTS a přidává trust vůči QES rootům.
-    def verify_cms(pkcs7, data, trust_roots, sub_filter, at: Time.current)
+    def verify_cms(pkcs7, data, trust_roots, sub_filter)
       if sub_filter == 'ETSI.RFC3161'
-        verify_timestamp(pkcs7, data, at:)
+        verify_timestamp(pkcs7, data)
       else
         VerifyPdfSignature.verify_contents(pkcs7, data, trust_roots)
       end
     end
 
-    def verify_timestamp(pkcs7, data, at: Time.current)
-      Qes::TimestampToken.verify(pkcs7, data, at:)
+    def verify_timestamp(pkcs7, data)
+      Qes::TimestampToken.intact?(pkcs7, data)
     rescue OpenSSL::Timestamp::TimestampError, OpenSSL::ASN1::ASN1Error
       false
     end
@@ -187,7 +217,7 @@ module Qes
       return false if certificate.nil? || trust_roots.blank?
 
       store = OpenSSL::X509::Store.new
-      store.purpose = OpenSSL::X509::PURPOSE_SMIME_SIGN
+      store.purpose = OpenSSL::X509::PURPOSE_ANY
       store.time = at
       trust_roots.each { |cert| store.add_cert(cert) }
 
@@ -223,14 +253,16 @@ module Qes
       byte_range[2] + byte_range[3] == pdf_bytes.bytesize ? 'full' : 'partial'
     end
 
-    def pdfium_report(pdf_bytes, trusted_certs, trusted_ranges:)
-      VerifyPdfSignature.call(StringIO.new(pdf_bytes), trusted_certs, trusted_ranges:).map do |signature|
+    def pdfium_report(pdf_bytes, trusted_certs, trusted_ranges:, allow_dss_changes: false)
+      VerifyPdfSignature.call(StringIO.new(pdf_bytes), trusted_certs,
+                              trusted_ranges:, allow_dss_changes:).map do |signature|
         {
           common_name: signature.common_name,
           signing_time: signature.signing_time&.utc&.iso8601,
           type: signature.type,
           verified: signature.verified,
           trusted: signature.trusted,
+          tsa_trusted: signature.tsa_trusted,
           modified: signature.modified,
           messages: signature.messages.map { |m| { status: m.status, text: m.text } }
         }

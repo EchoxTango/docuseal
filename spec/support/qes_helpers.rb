@@ -116,7 +116,7 @@ module QesHelpers
   # Testovací RFC 3161 token nad `io`/`byte_range` (PAdES-LTA testy).
   # `OpenSSL::PKCS7#data` je nil (stejně jako u DigiCert), takže testuje
   # i cestu s TSTInfo v `eContent` (SPEC § 7.6).
-  def timestamp_token(io, byte_range, key: tsa_key, certificate: tsa_certificate)
+  def timestamp_token(io, byte_range, key: tsa_key, certificate: tsa_certificate, at: Time.current)
     digest = OpenSSL::Digest.new('SHA256')
 
     byte_range.each_slice(2) do |offset, length|
@@ -124,7 +124,51 @@ module QesHelpers
       digest << io.read(length)
     end
 
-    build_timestamp_token(digest.digest, key:, certificate:)
+    build_timestamp_token(digest.digest, key:, certificate:, at:)
+  end
+
+  # Skutečný RFC 3161 response nad imprintem HTTP požadavku. Kontrola v
+  # DocTimestamp::Handler zůstává aktivní; žádné stuby dědičných metod.
+  def stub_tsa!(url: 'http://tsa.test', key: QesHelpers.tsa_key, certificate: QesHelpers.tsa_certificate)
+    stub_request(:post, url).to_return do |request|
+      imprint = OpenSSL::Timestamp::Request.new(request.body).message_imprint
+      token = QesHelpers.build_timestamp_token(imprint, key:, certificate:)
+
+      { status: 200, body: QesHelpers.timestamp_response(token),
+        headers: { 'Content-Type' => 'application/timestamp-reply' } }
+    end
+  end
+
+  def timestamp_response(token)
+    OpenSSL::ASN1::Sequence.new([
+      OpenSSL::ASN1::Sequence.new([OpenSSL::ASN1::Integer.new(0)]),
+      OpenSSL::ASN1.decode(token)
+    ]).to_der
+  end
+
+  # Vnější PDF může obsahovat libovolný token. Generátor útočných fixtures
+  # záměrně nepoužívá produkční kontrolu důvěry při vytváření DocTS.
+  def append_timestamp(pdf_bytes, key: tsa_key, certificate: tsa_certificate, at: Time.current, token: nil)
+    handler_class = Class.new(Submissions::TimestampHandler) do
+      define_method(:signature_size) { Qes::DocTimestamp::RESERVE }
+      define_method(:sign) do |io, range|
+        token || QesHelpers.timestamp_token(io, range, key:, certificate:, at:)
+      end
+    end
+    pdf = HexaPDF::Document.new(io: StringIO.new(pdf_bytes))
+    pdf.config['signature.signing_handler'][:test_tsa] = handler_class
+    output = StringIO.new
+    pdf.sign(output, handler: :test_tsa, tsa_url: 'http://tsa.test', write_options: { validate: false })
+
+    output.string
+  end
+
+  def self_signed_tsa_certificate
+    certificate = OpenSSL::X509::Certificate.new(tsa_certificate.to_der)
+    certificate.issuer = certificate.subject
+    certificate.sign(tsa_key, OpenSSL::Digest.new('SHA256'))
+
+    certificate
   end
 
   def tsa_key

@@ -35,14 +35,20 @@
       <template v-else-if="phase === 'awaiting_app'">
         <p class="text-sm text-gray-600 text-center">{{ t('qes_step_waiting') }}</p>
         <div
+          v-if="session.qr_svg"
           class="qes-qr bg-white p-2 rounded border"
           :aria-label="t('qes_step_button')"
           v-html="session.qr_svg"
         />
-        <button type="button" class="btn btn-primary" @click="openApp">
+        <button v-if="session.custom_scheme_link" type="button" class="btn btn-primary" @click="openApp">
           {{ t('qes_step_open_app') }}
         </button>
-        <a :href="session.fallback_url" class="text-xs text-gray-500 underline" target="_blank">
+        <a
+          v-if="session.fallback_url"
+          :href="session.fallback_url"
+          class="text-xs text-gray-500 underline"
+          target="_blank"
+        >
           {{ t('qes_step_no_app') }}
         </a>
         <p class="text-xs text-gray-500">
@@ -149,6 +155,10 @@ export default {
         body: JSON.stringify(body)
       })
       const payload = await response.json().catch(() => ({}))
+      // Token už nelze vydat znovu, ale rozpracovaný podpis lze dál sledovat.
+      if (response.status === 409 && payload.error === 'signature_in_progress' && payload.id) {
+        return payload
+      }
       if (!response.ok) {
         const error = new Error(payload.error || 'network')
         error.status = response.status
@@ -273,4 +283,3 @@ export default {
   }
 }
 </script>
-

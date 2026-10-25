@@ -65,6 +65,7 @@ module Qes
           session.update!(
             document_digest: Qes::TbsDocument.document_digest(tbs_pdf, algorithm: session.hash_algorithm),
             signed_attrs_der: prepared[:signed_attrs_der],
+            signing_time: Qes::CmsBuilder.signing_time_from(prepared[:signed_attrs_der]),
             certificate_info: certificate_info,
             certificate_chain: [certificate_der, *normalize_chain(chain)].map { |der| Base64.strict_encode64(der) },
             level: certificate_info[:level],
@@ -126,7 +127,9 @@ module Qes
         trusted_certs = Qes::Verifier.trusted_certs_for(session.account)
         trusted_certs += [seal_pkcs.certificate] if seal_pkcs
 
-        Qes::Validator.call(pdf_bytes, trust_roots:, trusted_certs:)
+        current_signature_range = Qes::TbsDocument.byte_range(session.tbs_document.download)
+
+        Qes::Validator.call(pdf_bytes, trust_roots:, trusted_certs:, current_signature_range:)
       end
 
       def trust_roots
@@ -142,6 +145,11 @@ module Qes
 
         unless session.state == 'awaiting_signature'
           raise ClientError.new(:wrong_state, 'Session is not awaiting a signature')
+        end
+
+        if Qes::Config[:tsa_url].present? && Qes.tsa_trust_roots.empty?
+          raise ClientError.new(:tsa_trust_not_configured,
+                                'QES_TSA_URL requires TSA trust roots; configure QES_TSA_TRUST_ROOTS')
         end
 
         # Dlouhé síťové operace (CRL fetch, TSA, PDF) mimo `with_lock`; transakce
@@ -172,6 +180,7 @@ module Qes
 
         final_pdf, seal_state = Qes::Seal.apply(signed_pdf, session.account, submitter: session.submitter,
                                                  pkcs: seal_pkcs)
+        raise ClientError.new(:seal_failed, 'Document seal failed; retry completion') if seal_state == 'failed'
 
         # DocTS (PAdES-LTA) až po DSS a pečeti — kryje celý dokument
         # včetně revokačních dat a pečeti; řetězení DocTS je evidence record.
@@ -183,13 +192,26 @@ module Qes
 
         # Finální PDF má podpis appky + DSS + pečeť + DocTS; pokrytí podpisu
         # appky je v něm částečné (DSS je až za ním), proto se `ok` vztahuje
-        # k podpisu před DSS. Tady se kontroluje INTACT všech signatur a trusted
-        # QES; pečeť a DocTS ověřuje `pdfium`/`seal` report.
+        # k podpisu před DSS. Starší revize musí být neporušené; vlastní podpis,
+        # nová pečeť a DocTS musí projít úplnou validací.
         final_report = validate(final_pdf)
         unless final_report[:inspection] == 'complete' && !final_report[:modified] &&
                final_report[:intact] && final_report[:trusted] &&
-               final_report[:signatures].all? { |result| Qes::Validator.accepted_signature?(result) }
+               final_report[:signatures].all? { |result| Qes::Validator.valid_for_scope?(result) }
           raise ClientError.new(:validation_failed, 'Signature validation failed')
+        end
+
+        report[:signer_validation] = final_report[:signatures].find do |result|
+          result[:qes] && result[:verification_scope] == 'full'
+        end
+        if doc_timestamp_state == 'applied'
+          timestamp = final_report[:signatures].last
+          unless timestamp[:kind] == 'timestamp' && timestamp[:verification_scope] == 'full' &&
+                 timestamp[:coverage] == 'full' && Qes::Validator.accepted_signature?(timestamp)
+            raise ClientError.new(:validation_failed, 'Document timestamp validation failed')
+          end
+
+          report[:doc_timestamp] = timestamp
         end
 
         signed_blob = upload_document(signed_pdf, 'qes-signed')
@@ -215,7 +237,8 @@ module Qes
           session.final_document.attach(final_blob)
           session.update!(signature:, signed_pdf_sha256: Digest::SHA256.hexdigest(signed_pdf),
                           final_pdf_sha256: Digest::SHA256.hexdigest(final_pdf),
-                          seal_state:, doc_timestamp_state:, validation_report: report)
+                          seal_state:, doc_timestamp_state:, validation_report: report,
+                          failure_code: nil, failure_message: nil)
           Qes::SessionManager.transition!(session, 'signed')
           Qes::SessionManager.transition!(session, 'embedded')
           Qes::SessionManager.transition!(session, 'validated')

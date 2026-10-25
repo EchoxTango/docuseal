@@ -9,6 +9,15 @@ RSpec.describe Qes::Verifier do
 
   let(:pdf) { QesHelpers.signed_pdf }
 
+  def modify_page(bytes)
+    document = HexaPDF::Document.new(io: StringIO.new(bytes))
+    document.pages[0].canvas(type: :overlay).rectangle(40, 40, 100, 100).fill
+    output = StringIO.new
+    document.write(output, incremental: true)
+
+    output.string
+  end
+
   it 'returns a valid report for an AdES signature' do
     report = described_class.call(pdf, name: 'contract.pdf')
 
@@ -108,7 +117,7 @@ RSpec.describe Qes::Verifier do
 
     expect(report[:verdict]).to eq('invalid')
     expect(report[:coverage]).to eq('partial')
-    expect(report[:modified]).to be false
+    expect(report[:modified]).to be true
   end
 
   it 'keeps a DSS and DocTS (PAdES-LTA) update valid' do
@@ -120,9 +129,8 @@ RSpec.describe Qes::Verifier do
     with_dss = Qes::Dss.apply(sealed, crls: [crl.to_der],
                               signature_contents: QesHelpers.signature_contents(sealed))
 
-    allow_any_instance_of(Qes::DocTimestamp::Handler).to receive(:sign) do |_handler, io, byte_range|
-      QesHelpers.timestamp_token(io, byte_range)
-    end
+    allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
+    stub_tsa!
 
     lta, state = Qes::DocTimestamp.apply(with_dss, tsa_url: 'http://tsa.test')
 
@@ -134,12 +142,13 @@ RSpec.describe Qes::Verifier do
     expect(report[:verdict]).to eq('valid')
     expect(report[:signatures].map { |signature| signature[:kind] })
       .to include('qes', 'seal', 'timestamp')
-    expect(report[:signatures].last[:tsa_trusted]).to be false
+    expect(report[:signatures].last[:tsa_trusted]).to be true
 
-    allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
-    trusted = described_class.call(lta, name: 'lta.pdf', account: submitter.account)
-    expect(trusted[:verdict]).to eq('valid')
-    expect(trusted[:signatures].last[:tsa_trusted]).to be true
+    allow(Qes).to receive(:tsa_trust_roots).and_return([])
+    untrusted = described_class.call(lta, name: 'lta.pdf', account: submitter.account)
+    expect(untrusted[:verdict]).to eq('invalid')
+    expect(untrusted[:modified]).to be true
+    expect(untrusted[:signatures].last).to include(intact: true, tsa_trusted: false)
   end
 
   it 'rejects an untrusted seal even when a later DocTS covers it' do
@@ -147,9 +156,8 @@ RSpec.describe Qes::Verifier do
     sealed, state = Qes::Seal.apply(pdf, submitter.account, submitter:,
                                     pkcs: QesHelpers.self_signed_pkcs12)
     expect(state).to eq('applied')
-    allow_any_instance_of(Qes::DocTimestamp::Handler).to receive(:sign) do |_handler, io, byte_range|
-      QesHelpers.timestamp_token(io, byte_range)
-    end
+    allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
+    stub_tsa!
     stamped, state = Qes::DocTimestamp.apply(sealed, tsa_url: 'http://tsa.test')
 
     expect(state).to eq('applied')
@@ -157,6 +165,82 @@ RSpec.describe Qes::Verifier do
 
     expect(report[:modified]).to be false
     expect(report[:verdict]).to eq('valid_untrusted')
+  end
+
+  [false, true].each do |roots_configured|
+    it "detects modified content followed by a self-made DocTS (TSA roots configured=#{roots_configured})" do
+      if roots_configured
+        allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
+      end
+      changed = modify_page(pdf)
+      stamped = QesHelpers.append_timestamp(changed, certificate: QesHelpers.self_signed_tsa_certificate)
+
+      report = described_class.call(stamped, name: 'changed-and-timestamped.pdf')
+
+      expect(report[:inspection]).to eq('complete')
+      expect(report[:intact]).to be true
+      expect(report[:modified]).to be true
+      expect(report[:verdict]).to eq('invalid')
+      expect(report[:signatures].last).to include(intact: true, tsa_trusted: false)
+
+      # Totéž musí platit pro výchozí cestu bez trusted_ranges z validátoru.
+      signatures = VerifyPdfSignature.call(StringIO.new(stamped), [])
+      expect(signatures.map(&:verified)).to all(be true)
+      expect(signatures.first.modified).to be true
+      expect(signatures.last.tsa_trusted).to be false
+    end
+  end
+
+  it 'keeps a trusted DocTS valid before modification and detects content appended after it' do
+    allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
+    stub_tsa!
+    stamped, state = Qes::DocTimestamp.apply(pdf, tsa_url: 'http://tsa.test')
+    expect(state).to eq('applied')
+
+    report = described_class.call(stamped, name: 'trusted-timestamp.pdf')
+    expect(report[:verdict]).to eq('valid')
+    expect(report[:modified]).to be false
+    expect(report[:signatures].last).to include(intact: true, tsa_trusted: true)
+    signatures = VerifyPdfSignature.call(StringIO.new(stamped), [])
+    expect(signatures.last.tsa_trusted).to be true
+    expect(signatures.any?(&:modified)).to be false
+
+    changed = modify_page(stamped)
+    report = described_class.call(changed, name: 'modified-after-timestamp.pdf')
+    expect(report[:intact]).to be true
+    expect(report[:verdict]).to eq('invalid')
+    expect(report[:modified]).to be true
+    expect(VerifyPdfSignature.call(StringIO.new(changed), []).last.modified).to be true
+
+    forged = QesHelpers.append_timestamp(changed, certificate: QesHelpers.self_signed_tsa_certificate)
+    report = described_class.call(forged, name: 'modified-after-trusted-timestamp-and-forged.pdf')
+    expect(report[:intact]).to be true
+    expect(report[:verdict]).to eq('invalid')
+    expect(report[:modified]).to be true
+  end
+
+  it 'marks even an intact untrusted DocTS after an accepted signature as modified' do
+    stamped = QesHelpers.append_timestamp(pdf, certificate: QesHelpers.self_signed_tsa_certificate)
+
+    report = described_class.call(stamped, name: 'untrusted-timestamp.pdf')
+
+    expect(report[:intact]).to be true
+    expect(report[:modified]).to be true
+    expect(report[:verdict]).to eq('invalid')
+  end
+
+  it 'returns only valid_untrusted for an intact untrusted timestamp without an accepted boundary' do
+    document = HexaPDF::Document.new
+    document.pages.add
+    output = StringIO.new
+    document.write(output)
+    stamped = QesHelpers.append_timestamp(output.string, certificate: QesHelpers.self_signed_tsa_certificate)
+
+    report = described_class.call(stamped, name: 'timestamp-only.pdf')
+
+    expect(report[:intact]).to be true
+    expect(report[:verdict]).to eq('valid_untrusted')
+    expect(report[:signatures].last).to include(tsa_trusted: false, time_source: 'current')
   end
 
   it 'detects content changes followed by an untrusted seal' do
@@ -170,6 +254,19 @@ RSpec.describe Qes::Verifier do
 
     expect(state).to eq('applied')
     report = described_class.call(sealed, name: 'changed-and-sealed.pdf')
+
+    expect(report[:intact]).to be true
+    expect(report[:modified]).to be true
+    expect(report[:verdict]).to eq('invalid')
+  end
+
+  it 'detects an untrusted signature after the last accepted boundary even without page changes' do
+    submitter = QesHelpers.build_qes_submitter
+    sealed, state = Qes::Seal.apply(pdf, submitter.account, submitter:,
+                                    pkcs: QesHelpers.self_signed_pkcs12)
+    expect(state).to eq('applied')
+
+    report = described_class.call(sealed, name: 'untrusted-signature.pdf')
 
     expect(report[:intact]).to be true
     expect(report[:modified]).to be true

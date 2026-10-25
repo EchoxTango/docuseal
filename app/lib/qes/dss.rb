@@ -11,24 +11,36 @@ module Qes
   module Dss
     module_function
 
-    def apply(pdf_bytes, crls: [], certs: [], signature_contents: nil)
+    def apply(pdf_bytes, crls: [], certs: [], ocsps: [], signature_contents: nil)
       crls = Array(crls)
       certs = Array(certs)
-      return pdf_bytes if crls.blank? && certs.blank?
+      ocsps = Array(ocsps)
+      return pdf_bytes if crls.blank? && certs.blank? && ocsps.blank?
 
       pdf = HexaPDF::Document.new(io: StringIO.new(pdf_bytes))
-      dss = pdf.add({ Type: :DSS })
-      crl_refs = crls.map { |der| pdf.add({ Type: :EmbeddedFile }, stream: der) }
-      cert_refs = certs.map { |der| pdf.add({ Type: :EmbeddedFile }, stream: der) }
-      dss[:CRLs] = crl_refs if crl_refs.any?
-      dss[:Certs] = cert_refs if cert_refs.any?
+      # Nový slovník zachová důkazy i VRI předchozích podepisujících.
+      dss = pdf.add(pdf.catalog[:DSS]&.value&.dup || { Type: :DSS })
+      refs = { CRL: [:CRLs, crls], Cert: [:Certs, certs], OCSP: [:OCSPs, ocsps] }.transform_values do |key, ders|
+        existing = stream_refs(pdf, dss[key])
+        by_content = existing.index_by(&:stream)
+        incoming = ders.uniq.map do |der|
+          by_content[der] ||= pdf.add({ Type: :EmbeddedFile }, stream: der)
+        end
+        dss[key] = by_content.values if by_content.any?
+        incoming
+      end
 
       if signature_contents.present?
         key = Digest::SHA1.hexdigest(signature_contents).upcase.to_sym
-        vri = pdf.add({ Type: :VRI, TU: Time.now.utc.strftime('D:%Y%m%d%H%M%SZ') })
-        vri[:CRL] = crl_refs if crl_refs.any?
-        vri[:Cert] = cert_refs if cert_refs.any?
-        dss[:VRI] = pdf.add({ key => vri })
+        entries = pdf.add(dss[:VRI]&.value&.dup || {})
+        vri = pdf.add(entries[key]&.value&.dup || { Type: :VRI })
+        vri[:TU] = Time.now.utc.strftime('D:%Y%m%d%H%M%SZ')
+        refs.each do |type, incoming|
+          merged = (stream_refs(pdf, vri[type]) + incoming).uniq(&:stream)
+          vri[type] = merged if merged.any?
+        end
+        entries[key] = vri
+        dss[:VRI] = entries
       end
 
       pdf.catalog[:DSS] = dss
@@ -36,6 +48,10 @@ module Qes
       io = StringIO.new
       pdf.write(io, incremental: true, validate: false)
       io.string
+    end
+
+    def stream_refs(pdf, array)
+      array ? array.map { |ref| pdf.deref(ref) }.uniq(&:stream) : []
     end
   end
 end

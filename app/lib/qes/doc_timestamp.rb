@@ -32,7 +32,7 @@ module Qes
         pkcs7 = OpenSSL::PKCS7.new(token)
         return if Qes::TimestampToken.verify(pkcs7, data)
 
-        raise TimestampError, 'TSA token does not match the document digest'
+        raise TimestampError, 'TSA token is not intact or its signer is not trusted'
       rescue OpenSSL::PKCS7::PKCS7Error, OpenSSL::ASN1::ASN1Error, OpenSSL::Timestamp::TimestampError
         raise TimestampError, 'TSA returned an invalid timestamp token'
       end

@@ -30,9 +30,8 @@ RSpec.describe 'QES PAdES-LTA' do
         signature_contents: HexaPDF::Document.new(io: StringIO.new(signed_pdf)).signatures.to_a.last[:Contents].to_s
       )
 
-      allow_any_instance_of(Qes::DocTimestamp::Handler).to receive(:sign) do |_handler, io, byte_range|
-        QesHelpers.timestamp_token(io, byte_range)
-      end
+      allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
+      stub_tsa!
       final_pdf, state = Qes::DocTimestamp.apply(dss_pdf, tsa_url: 'http://tsa.test')
 
       expect(state).to eq('applied')

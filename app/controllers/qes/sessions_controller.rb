@@ -58,6 +58,9 @@ module Qes
       return render_qes_error_with(:wrong_state, :conflict) unless @session.state.in?(%w[awaiting_app app_opened])
 
       provider = provider_for(@session)
+      certificate = Qes::CertificateInfo.parse(certificate_der).certificate
+      Qes::Validator.verify_chain!(certificate, chain, provider.trust_roots)
+
       # CRL fetch (síť) mimo DB transakci; transakce pak drží jen zápis (M20).
       crls = Qes::Ltv.fetch_crls(certificate_der, chain:)
 
@@ -97,7 +100,13 @@ module Qes
 
       render json: completed_payload
     rescue Qes::ClientError => e
-      fail_session(e)
+      if e.code == :seal_failed
+        QesSession.where(id: @session.id, state: 'awaiting_signature')
+                  .update_all(failure_code: e.code.to_s, failure_message: e.message)
+        Qes.log(@session.reload)
+      else
+        fail_session(e)
+      end
 
       render_qes_error_with(e.code, :unprocessable_content)
     end
@@ -204,6 +213,8 @@ module Qes
         signed_pdf_sha256: @session.signed_pdf_sha256,
         final_pdf_sha256: @session.final_pdf_sha256,
         seal_state: @session.seal_state,
+        doc_timestamp_state: @session.doc_timestamp_state,
+        signing_time: @session.signing_time&.utc&.iso8601,
         validation: @session.validation_report,
         completed_at: @session.completed_at&.utc&.iso8601
       }

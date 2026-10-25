@@ -31,6 +31,7 @@
 #  prepared_at         :datetime
 #  app_opened_at       :datetime
 #  signed_at           :datetime
+#  signing_time        :datetime
 #  embedded_at         :datetime
 #  validated_at        :datetime
 #  completed_at        :datetime

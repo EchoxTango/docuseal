@@ -200,6 +200,27 @@ test('accepts the current completion response', async () => {
   assert.equal(vm.phase, 'completed')
 })
 
+test('resumes polling an in-progress signature returned by create without a token', async () => {
+  const { vm, component, timers } = await componentInstance()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 409,
+    json: async () => ({ error: 'signature_in_progress', id: 42, state: 'awaiting_signature' })
+  })
+  vm.csrfToken = () => null
+  vm.post = component.methods.post.bind(vm)
+  try {
+    await vm.createSession()
+    assert.equal(vm.session.id, 42)
+    assert.equal(vm.session.token, undefined)
+    assert.equal(vm.phase, 'awaiting_app')
+    assert.deepEqual(timers, [2000])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('ignores a stale request failure without restarting polling', async () => {
   const { vm, emissions, timers } = await componentInstance()
   const pending = deferred()
