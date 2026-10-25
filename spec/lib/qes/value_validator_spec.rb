@@ -11,7 +11,7 @@ RSpec.describe Qes::ValueValidator do
   it 'accepts qes:<id> of a completed session of the same submitter' do
     session = create(:qes_session, submitter:, submission: submitter.submission,
                                     account: submitter.account, field_uuid: field['uuid'],
-                                    state: 'completed')
+                                    state: 'completed', level: 'ades')
 
     expect { described_class.call({ field['uuid'] => session.value_token }, submitter) }.not_to raise_error
   end
@@ -22,7 +22,7 @@ RSpec.describe Qes::ValueValidator do
   end
 
   it 'rejects a session of another submitter' do
-    session = create(:qes_session, state: 'completed')
+    session = create(:qes_session, state: 'completed', level: 'ades')
 
     expect { described_class.call({ field['uuid'] => session.value_token }, submitter) }
       .to raise_error(Submitters::SubmitValues::ValidationError)
@@ -41,7 +41,7 @@ RSpec.describe Qes::ValueValidator do
 
     before do
       submitter.update!(values: { text_field['uuid'] => 'Agreed price' })
-      session = create(:qes_session, submitter:, state: 'completed')
+      session = create(:qes_session, submitter:, state: 'completed', level: 'ades')
       session.tbs_document.attach(io: StringIO.new('%PDF-snapshot'), filename: 'snapshot.pdf',
                                   content_type: 'application/pdf',
                                   metadata: { qes_values: { text_field['uuid'] => 'Agreed price' } })
@@ -60,6 +60,37 @@ RSpec.describe Qes::ValueValidator do
 
       expect { Submitters::SubmitValues.update_submitter!(submitter, params, nil) }.not_to raise_error
     end
+  end
+  it 'rejects a completed session for another field of the same submitter' do
+    submission = QesHelpers.build_qes_submission(qes_fields_per_submitter: 2)
+    signer = submission.submitters.first
+    fields = Qes.template_fields(submission).select { |f| f['type'] == 'qes' }
+    session = create(:qes_session, submitter: signer, field_uuid: fields.first['uuid'],
+                                   state: 'completed', level: 'ades')
+
+    expect { described_class.call({ fields.last['uuid'] => session.value_token }, signer) }
+      .to raise_error(Submitters::SubmitValues::ValidationError)
+  end
+
+  it 'rejects AdES for a field requiring QES' do
+    signer = QesHelpers.build_qes_submitter(level: 'qes')
+    session = create(:qes_session, submitter: signer, state: 'completed', level: 'ades')
+
+    expect { described_class.call({ session.field_uuid => session.value_token }, signer) }
+      .to raise_error(Submitters::SubmitValues::ValidationError)
+  end
+
+  it 'accepts QES for a field requiring AdES' do
+    session = create(:qes_session, submitter:, state: 'completed', level: 'qes')
+
+    expect { described_class.call({ field['uuid'] => session.value_token }, submitter) }.not_to raise_error
+  end
+
+  it 'rejects a session without an established signing level' do
+    session = create(:qes_session, submitter:, state: 'completed', level: nil)
+
+    expect { described_class.call({ field['uuid'] => session.value_token }, submitter) }
+      .to raise_error(Submitters::SubmitValues::ValidationError)
   end
   it 'checks effective values as well as the submitted values' do
     text_field = Qes.template_fields(submitter.submission).find { |f| f['type'] == 'text' }

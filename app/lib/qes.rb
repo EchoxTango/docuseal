@@ -108,6 +108,13 @@ module Qes
     end
   end
 
+  def self.session_satisfies_level?(session, field)
+    required = field.dig('preferences', 'level').presence || 'ades'
+
+    %w[ades qes].include?(required) &&
+      (session.level == 'qes' || (required == 'ades' && session.level == 'ades'))
+  end
+
   def self.template_schema(submission)
     submission.template_schema.presence || submission.template&.schema || []
   end

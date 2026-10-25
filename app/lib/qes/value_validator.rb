@@ -15,7 +15,7 @@ module Qes
         field = Qes.template_fields(submitter.submission).find { |f| f['uuid'] == key.to_s }
         next unless field&.dig('type') == 'qes'
 
-        validate!(value, submitter)
+        validate!(value, submitter, field)
       end
     end
 
@@ -40,14 +40,16 @@ module Qes
       end
     end
 
-    def validate!(value, submitter)
+    def validate!(value, submitter, field)
       match = VALUE_REGEXP.match(value.to_s)
 
       raise Submitters::SubmitValues::ValidationError, 'Invalid qes field value' if match.nil?
 
       session = QesSession.find_by(id: match[1], submitter_id: submitter.id, state: 'completed')
 
-      raise Submitters::SubmitValues::ValidationError, 'Invalid qes field value' if session.nil?
+      if session.nil? || session.field_uuid != field['uuid'] || !Qes.session_satisfies_level?(session, field)
+        raise Submitters::SubmitValues::ValidationError, 'Invalid qes field value'
+      end
     end
   end
 end
