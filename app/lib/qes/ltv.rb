@@ -147,8 +147,12 @@ module Qes
 
     def private_address?(address)
       ip = IPAddr.new(address)
+      ip = ip.native if ip.ipv4_mapped?
 
-      ip.loopback? || ip.private? || ip.link_local?
+      ip.loopback? || ip.private? || ip.link_local? ||
+        %w[100.64.0.0/10 0.0.0.0/8 169.254.0.0/16 ::/128 fc00::/7].any? do |range|
+          IPAddr.new(range).include?(ip)
+        end
     rescue IPAddr::InvalidAddressError
       true
     end

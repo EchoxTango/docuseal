@@ -107,6 +107,23 @@ RSpec.describe Qes::Ltv do
     end
   end
 
+  describe '.private_address?' do
+    %w[100.64.0.0 100.127.255.255 0.0.0.0 0.255.255.255 169.254.1.1
+       10.0.0.1 172.16.0.1 192.168.1.1 127.0.0.1 :: ::1 fc00::1 fdff::1 fe80::1
+       ::ffff:192.168.1.1 ::ffff:100.64.0.1 ::ffff:127.0.0.1 ::ffff:0.0.0.0
+       ::ffff:169.254.1.1].each do |address|
+      it "rejects #{address}" do
+        expect(described_class.private_address?(address)).to be true
+      end
+    end
+
+    %w[100.63.255.255 100.128.0.0 1.1.1.1 2606:4700:4700::1111 ::ffff:1.1.1.1].each do |address|
+      it "allows the public address #{address}" do
+        expect(described_class.private_address?(address)).to be false
+      end
+    end
+  end
+
   describe '.validate_url!' do
     it 'allows an explicitly allowlisted host over http (testy)' do
       expect { described_class.validate_url!(URI.parse('http://127.0.0.1:8765/root.crl')) }
