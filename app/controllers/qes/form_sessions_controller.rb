@@ -106,8 +106,10 @@ module Qes
 
       return render_qes_error_with(:unknown_session, :not_found) if session.nil?
 
-      if Qes::SessionManager.active?(session.state)
-        Qes::SessionManager.transition!(session, 'cancelled')
+      session.with_lock do
+        if Qes::SessionManager.active?(session.state)
+          Qes::SessionManager.transition!(session, 'cancelled')
+        end
       end
 
       Qes.log(session)

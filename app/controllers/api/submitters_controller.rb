@@ -38,7 +38,8 @@ module Api
 
     # rubocop:disable Metrics/MethodLength
     def update
-      if submitter_params[:completed] && Qes.missing_required_sessions(@submitter).present?
+      completed = ActiveModel::Type::Boolean.new.cast(submitter_params[:completed])
+      if completed && Qes.missing_required_sessions(@submitter).present?
         return render json: { error: 'Required QES signatures are missing' }, status: :unprocessable_content
       end
 
@@ -162,9 +163,14 @@ module Api
     end
 
     def maybe_assign_completed_attributes(submitter, attrs)
-      submitter.completed_at = attrs[:completed] ? Time.current : submitter.completed_at
+      completed = ActiveModel::Type::Boolean.new.cast(attrs[:completed])
+      if completed && Qes.missing_required_sessions(submitter).present?
+        raise Submitters::SubmitValues::ValidationError, 'Required QES signatures are missing'
+      end
 
-      Submitters::SubmitValues.finalize_values!(submitter) if attrs[:completed]
+      submitter.completed_at = completed ? Time.current : submitter.completed_at
+
+      Submitters::SubmitValues.finalize_values!(submitter) if completed
 
       submitter
     end

@@ -29,7 +29,7 @@ RSpec.describe 'QES chained signatures' do
   end
 
   it 'completes a later signer when an intact earlier DocTS is no longer trusted' do
-    allow(Qes::Ltv).to receive(:fetch_crls).and_return([])
+    allow(Qes::Ltv).to receive(:fetch_first_crl).and_return(QesHelpers.crl)
     Qes::Config[:tsa_url] = 'http://tsa.test'
     old_certificate = QesHelpers.self_signed_tsa_certificate
     allow(Qes).to receive(:tsa_trust_roots).and_return([old_certificate])
@@ -60,7 +60,7 @@ RSpec.describe 'QES chained signatures' do
   end
 
   it 'rejects an untrusted new DocTS while completing a later signer' do
-    allow(Qes::Ltv).to receive(:fetch_crls).and_return([])
+    allow(Qes::Ltv).to receive(:fetch_first_crl).and_return(QesHelpers.crl)
     submission = QesHelpers.build_qes_submission(count: 2)
     sign!(submission, 0)
     Qes::Config[:tsa_url] = 'http://tsa.test'
@@ -82,6 +82,9 @@ RSpec.describe 'QES chained signatures' do
       first, first_session = sign!(submission, 0)
       _second, second_session = sign!(submission, 1)
 
+      manifest = first_session.tbs_document.blob.metadata.fetch('qes_document_manifest')
+      expect(manifest).to eq(Qes::TbsDocument.manifest_for(submission))
+      expect(second_session.tbs_document.blob.metadata['qes_document_manifest']).to eq(manifest)
       first_final = first_session.final_document.download
       second_tbs = second_session.tbs_document.download
       second_final = second_session.final_document.download
@@ -112,6 +115,9 @@ RSpec.describe 'QES chained signatures' do
       _first, first_session = sign!(submission, 0, field_index: 0, complete: false)
       _second, second_session = sign!(submission, 0, field_index: 1, complete: false)
 
+      manifest = first_session.tbs_document.blob.metadata.fetch('qes_document_manifest')
+      expect(manifest).to eq(Qes::TbsDocument.manifest_for(submission))
+      expect(second_session.tbs_document.blob.metadata['qes_document_manifest']).to eq(manifest)
       first_final = first_session.final_document.download
       second_tbs = second_session.tbs_document.download
       second_final = second_session.final_document.download

@@ -10,7 +10,7 @@ module VerifyPdfSignature
 
   module_function
 
-  def call(io, trusted_certs, trusted_ranges: nil, allow_dss_changes: false)
+  def call(io, trusted_certs, trusted_ranges: nil, allow_dss_changes: true)
     Pdfium.with_instance do
       Pdfium::Document.open_io(io) do |document|
         signatures = document.signatures.select { |e| e.byte_range.any?(&:positive?) && e.contents.present? }
@@ -22,7 +22,13 @@ module VerifyPdfSignature
         end
         trusted_signatures = verified_signatures.select { |e| trusted_signature?(e, trusted_certs) }
         trusted_timestamps = verified_signatures.select { |signature| trusted_timestamp?(signature, io) }
-        # Hranici změn smí posunout jen přijatý podpis nebo DocTS důvěryhodné TSA.
+        io.rewind
+        timestamp_io = StringIO.new(io.read)
+        timestamps = Qes::Validator.document_timestamps(
+          Qes::Validator.signature_dicts(timestamp_io.string), timestamp_io, at: Time.current
+        )
+        trusted_qes = verified_signatures.select { |signature| trusted_qes_signature?(signature, timestamps:) }
+        # DocTS proves existence, not approval of changes to signed content.
         accepted = verified_signatures.select do |signature|
           if signature.sub_filter == 'ETSI.RFC3161'
             trusted_timestamps.include?(signature) &&
@@ -31,32 +37,40 @@ module VerifyPdfSignature
             trusted_ranges.include?(signature.byte_range)
           else
             (signature.sub_filter == 'adbe.pkcs7.detached' && trusted_signatures.include?(signature)) ||
-              trusted_qes_signature?(signature)
+              trusted_qes.include?(signature)
           end
         end
-        last_signature = accepted.max_by(&:signed_end)
+        last_signature = accepted.reject { |signature| signature.sub_filter == 'ETSI.RFC3161' }
+                                 .max_by(&:signed_end)
+        timestamp_ranges = (accepted & trusted_timestamps).map(&:byte_range)
         has_unsigned_changes = last_signature &&
-                               unsigned_changes?(document, io, last_signature.signed_end, allow_dss_changes:)
+                               unsigned_changes?(document, io, last_signature.signed_end,
+                                                 allow_dss_changes:, timestamp_ranges:)
 
         signatures.map do |signature|
           build_signature(signature, trusted_certs,
                           verified: verified_signatures.include?(signature),
-                          trusted: trusted_signatures.include?(signature),
+                          trusted: trusted_signatures.include?(signature) || trusted_qes.include?(signature),
                           tsa_trusted: trusted_timestamps.include?(signature),
-                          modified: has_unsigned_changes && signature == last_signature)
+                          modified: !!has_unsigned_changes && signature == last_signature)
         end
       end
     end
   end
 
-  def trusted_qes_signature?(signature)
+  def trusted_qes_signature?(signature, timestamps: [], at: Time.current)
     return false unless signature.sub_filter == 'ETSI.CAdES.detached'
 
     pkcs7 = OpenSSL::PKCS7.new(signature.contents)
     signer = signer_certificate(pkcs7)
+    return false unless signer && Qes::CertificateInfo.new(signer).signing_leaf?
+
     chain = (pkcs7.certificates || []).reject { |cert| cert.to_der == signer&.to_der }
 
-    Qes::Validator.trusted_chain?(signer, chain, Qes.trust_roots)
+    timestamp_time = timestamps.filter_map { |range, time| time if range[1] >= signature.signed_end }.min
+    evidence_time = [timestamp_time, Qes::TimestampToken.signature_time(pkcs7, at:)].compact.min
+
+    Qes::Validator.trusted_chain?(signer, chain, Qes.trust_roots, at: evidence_time || at)
   end
 
   def trusted_timestamp?(signature, io)
@@ -91,7 +105,7 @@ module VerifyPdfSignature
     pkcs7 = OpenSSL::PKCS7.new(signature.contents)
 
     SignatureStruct.new(
-      messages: build_messages(pkcs7, verified, trusted_certs, modified),
+      messages: build_messages(pkcs7, verified, trusted_certs, modified, trusted:),
       reason: signature.reason,
       signing_time: signing_time(pkcs7, signature),
       common_name: common_name(pkcs7),
@@ -114,11 +128,11 @@ module VerifyPdfSignature
     )
   end
 
-  def build_messages(pkcs7, verified, trusted_certs, has_unsigned_changes)
+  def build_messages(pkcs7, verified, trusted_certs, has_unsigned_changes, trusted: false)
     messages =
       if verified
         [MessageStruct.new(text: I18n.t('signature_valid'), status: :success),
-         certificate_message(pkcs7, trusted_certs)]
+         certificate_message(pkcs7, trusted_certs, trusted:)]
       else
         [MessageStruct.new(text: I18n.t('signature_verification_failed'), status: :error)]
       end
@@ -131,8 +145,8 @@ module VerifyPdfSignature
     messages << MessageStruct.new(text: "Certificate chain: #{certificate_chain(pkcs7).join(' -> ')}")
   end
 
-  def certificate_message(pkcs7, trusted_certs)
-    if trusted_certificate?(pkcs7, trusted_certs)
+  def certificate_message(_pkcs7, _trusted_certs, trusted: false)
+    if trusted
       MessageStruct.new(text: I18n.t('signed_with_trusted_certificate'), status: :success)
     else
       MessageStruct.new(text: I18n.t('signed_with_external_certificate'), status: :error)
@@ -140,7 +154,13 @@ module VerifyPdfSignature
   end
 
   def trusted_signature?(signature, trusted_certs)
-    trusted_certificate?(OpenSSL::PKCS7.new(signature.contents), trusted_certs)
+    pkcs7 = OpenSSL::PKCS7.new(signature.contents)
+    if signature.sub_filter == 'ETSI.CAdES.detached'
+      signer = signer_certificate(pkcs7)
+      return false unless signer && Qes::CertificateInfo.new(signer).signing_leaf?
+    end
+
+    trusted_certificate?(pkcs7, trusted_certs)
   rescue OpenSSL::PKCS7::PKCS7Error
     false
   end
@@ -226,22 +246,11 @@ module VerifyPdfSignature
     byte_range[2] == byte_range[1] + (signature.contents.bytesize * 2) + 2
   end
 
-  def unsigned_changes?(document, io, signed_end, allow_dss_changes: false)
-    # Veřejné ověření vyžaduje pokrytí všech bajtů. Pouze dokončení smí
-    # přidat vlastní DSS bez pečeti/TSA; tato výjimka nepřijímá nové podpisy.
+  def unsigned_changes?(_document, io, signed_end, allow_dss_changes: true, timestamp_ranges: [])
     return signed_end < io.size unless allow_dss_changes
 
-    io.seek(signed_end)
-    unsigned_data = io.read.b.strip
-
-    return false if unsigned_data.empty?
-    return true unless unsigned_data.end_with?('%%EOF')
-
-    io.seek(0)
-
-    Pdfium::Document.open_bytes(io.read(signed_end)) do |signed_document|
-      !document.only_dss_changes?(signed_document)
-    end
+    io.rewind
+    !Qes::RevisionChanges.allowed?(io.read, signed_end, timestamp_ranges:)
   end
 
   def signed_data(io, byte_range)

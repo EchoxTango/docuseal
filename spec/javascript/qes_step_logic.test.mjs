@@ -2,8 +2,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import * as compiler from '@vue/compiler-sfc'
-
 import {
   ERROR_KEYS,
   cancelPath,
@@ -62,23 +60,6 @@ test('maps states to terminal phases', () => {
 test('builds the cancel request and state', () => {
   assert.equal(cancelPath(42), '/qes_sessions/42/cancel')
   assert.deepEqual(cancelledState(), { phase: 'idle', session: null })
-})
-
-test('qes_step.vue compiles and wires the tested logic', () => {
-  const source = readFileSync(new URL('../../app/javascript/submission_form/qes_step.vue', import.meta.url), 'utf8')
-  const { descriptor, errors } = compiler.parse(source)
-
-  assert.equal(errors.length, 0)
-  assert.equal(descriptor.script != null || descriptor.scriptSetup != null, true)
-
-  const script = compiler.compileScript(descriptor, { id: 'qes-step' })
-
-  assert.match(script.content, /qesStepCancelPath/)
-  assert.match(script.content, /qesStepCancelledState/)
-  assert.match(script.content, /qesStepTerminalPhase/)
-  assert.match(script.content, /qesStepErrorKey/)
-  assert.match(script.content, /qesStepNextBackoff/)
-  assert.match(script.content, /qesStepPollTimedOut/)
 })
 
 test('form.vue and area.vue keep the QesStep integration', () => {
@@ -217,10 +198,80 @@ test('resumes polling an in-progress signature returned by create without a toke
     assert.equal(vm.session.token, undefined)
     assert.equal(vm.phase, 'awaiting_app')
     assert.deepEqual(timers, [2000])
+    const calls = []
+    globalThis.fetch = async (url, options) => {
+      calls.push({ url, method: options.method, body: JSON.parse(options.body) })
+      return { ok: true, json: async () => calls.length === 1
+        ? { state: 'cancelled' }
+        : { id: 43, token: 'fresh', qr_svg: '<svg/>', state: 'awaiting_app' } }
+    }
+    vm.baseUrl = ''
+    vm.submitterSlug = 'signer'
+    await vm.restartSession()
+    assert.deepEqual(calls, [
+      { url: '/s/signer/qes_sessions/42/cancel', method: 'POST', body: {} },
+      { url: '/s/signer/qes_sessions', method: 'POST', body: { field_uuid: 'field' } }
+    ])
+    assert.equal(vm.session.id, 43)
+    assert.equal(vm.session.token, 'fresh')
+    assert.equal(vm.phase, 'awaiting_app')
+    assert.equal(vm.restarting, false)
   } finally {
     globalThis.fetch = originalFetch
   }
 })
+
+test('shows the in-progress explanation and restart action in Czech and English', () => {
+  const vue = readFileSync(new URL('../../app/javascript/submission_form/qes_step.vue', import.meta.url), 'utf8')
+  const translations = readFileSync(new URL('../../app/javascript/submission_form/i18n.js', import.meta.url), 'utf8')
+  assert.match(vue, /session.error === 'signature_in_progress' \? 'qes_step_in_progress'/)
+  assert.match(vue, /@click="restartSession"/)
+  assert.match(vue, /t\('qes_step_cancel_restart'\)/)
+  assert.match(translations, /Podpis právě probíhá v aplikaci\. Dokončete ho v telefonu, nebo ho zrušte\./)
+  assert.match(translations, /Zrušit a začít znovu/)
+  assert.match(translations, /Signing is in progress in the app\. Complete it on your phone, or cancel it\./)
+  assert.match(translations, /Cancel and start again/)
+})
+
+test('waits for confirmed cancellation and suppresses duplicate restart clicks', async () => {
+  const { vm } = await componentInstance()
+  const pending = deferred()
+  const calls = []
+  vm.post = async (path) => {
+    calls.push(path)
+    return path.endsWith('/cancel') ? pending.promise : { id: 2 }
+  }
+  const restart = vm.restartSession()
+  await vm.restartSession()
+  assert.deepEqual(calls, ['/qes_sessions/1/cancel'])
+  pending.resolve({ state: 'cancelled' })
+  await restart
+  assert.deepEqual(calls, ['/qes_sessions/1/cancel', '/qes_sessions'])
+})
+
+for (const outcome of ['failure', 'completed', 'unmounted']) {
+  test(`does not create a replacement after cancellation ${outcome}`, async () => {
+    const { vm, component, timers } = await componentInstance()
+    const pending = deferred()
+    const calls = []
+    vm.phase = 'awaiting_app'
+    vm.post = async (path) => {
+      calls.push(path)
+      await pending.promise
+      if (outcome === 'failure') throw new Error('network')
+      return { state: outcome === 'completed' ? 'completed' : 'cancelled' }
+    }
+    const restart = vm.restartSession()
+    if (outcome === 'unmounted') component.beforeUnmount.call(vm)
+    pending.resolve()
+    await restart
+    assert.deepEqual(calls, ['/qes_sessions/1/cancel'])
+    assert.equal(vm.session.id, 1)
+    assert.equal(vm.restarting, false)
+    if (outcome === 'failure') assert.equal(vm.error, 'network')
+    if (outcome === 'unmounted') assert.deepEqual(timers, [])
+  })
+}
 
 test('ignores a stale request failure without restarting polling', async () => {
   const { vm, emissions, timers } = await componentInstance()

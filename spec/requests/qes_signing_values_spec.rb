@@ -6,7 +6,7 @@ RSpec.describe 'QES signing values', type: :request do
   before do
     QesHelpers.configure!
     stub_memory_cache!
-    allow(Qes::Ltv).to receive(:fetch_crls).and_return([])
+    allow(Qes::Ltv).to receive(:fetch_first_crl).and_return(QesHelpers.crl)
   end
 
   let(:submitter) { QesHelpers.build_qes_submitter }
@@ -32,6 +32,33 @@ RSpec.describe 'QES signing values', type: :request do
     post "/qes/sessions/#{token}/complete", params: { signature: Base64.strict_encode64(signature) }
     expect(response).to have_http_status(:ok)
     expect(response.parsed_body['state']).to eq('completed')
+  end
+
+  it 'returns 422 values_changed when signed values changed before session creation' do
+    create(:qes_session, :with_values_snapshot, submitter:, state: 'completed', level: 'ades')
+    submitter.update!(values: submitter.values.merge(text_field['uuid'] => 'Changed after signing'))
+
+    expect { start_session }.not_to change(QesSession, :count)
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.parsed_body['error']).to eq('values_changed')
+  end
+
+  it 'returns 422 values_changed when signed values changed before data_to_sign' do
+    start_session
+    expect(response).to have_http_status(:created)
+    token = response.parsed_body.fetch('token')
+    session = QesSession.find(response.parsed_body.fetch('id'))
+    create(:qes_session, :with_values_snapshot, submitter:, state: 'completed', level: 'ades')
+    submitter.update!(values: submitter.values.merge(text_field['uuid'] => 'Changed after signing'))
+    expect(Qes::TbsDocument).not_to receive(:build)
+
+    prepare_signature(token)
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.parsed_body['error']).to eq('values_changed')
+    expect(session.reload.state).to eq('awaiting_app')
+    expect(session.tbs_document).not_to be_attached
   end
 
   %i[form api].each do |path|
@@ -102,16 +129,21 @@ RSpec.describe 'QES signing values', type: :request do
   end
 
   %i[form api].each do |path|
-    it "renders final defaults and formula values before signing and preserves them at completion (#{path})" do
+    it "renders stamp, date defaults and formula values before signing and preserves them at completion (#{path})" do
       date = text_field.deep_dup.merge('uuid' => SecureRandom.uuid, 'name' => 'Prepared date',
-                                      'readonly' => true, 'default_value' => 'Prepared {{date}}')
+                                      'readonly' => true, 'type' => 'date', 'default_value' => '{{date}}',
+                                      'preferences' => { 'format' => 'YYYY-MM-DD' })
       formula = text_field.deep_dup.merge('uuid' => SecureRandom.uuid, 'name' => 'Calculated value',
                                          'type' => 'number', 'readonly' => true,
                                          'preferences' => { 'formula' => '1 + 2' })
+      stamp = text_field.deep_dup.merge('uuid' => SecureRandom.uuid, 'name' => 'Company stamp',
+                                       'type' => 'stamp', 'preferences' => { 'with_logo' => false })
+      stamp['areas'].first['y'] = 0.4
       date['areas'].first['y'] = 0.2
       formula['areas'].first['y'] = 0.3
-      submission.update!(template_fields: [qes_field, text_field, date, formula])
-      expected_date = "Prepared #{TimeUtils.current_date_value(nil, submitter.account.timezone)}"
+      submission.update!(template_fields: [qes_field, text_field, date, formula, stamp])
+      expect(submission.template_fields.pluck('type')).not_to include('verification')
+      expected_date = TimeUtils.current_date_value(nil, submitter.account.timezone)
 
       start_session
       expect(response).to have_http_status(:created)
@@ -119,12 +151,14 @@ RSpec.describe 'QES signing values', type: :request do
       session = QesSession.find(response.parsed_body['id'])
       expect(submitter.reload.values).not_to have_key(date['uuid'])
       expect(submitter.values).not_to have_key(formula['uuid'])
+      original_values = submitter.values.deep_dup
 
       expect(Qes::TbsDocument).to receive(:build).and_wrap_original do |original, signer, *args, **options|
         expect(signer.values[date['uuid']]).to eq(expected_date)
+        expect(signer.attachments.find { |attachment| attachment.uuid == signer.values[stamp['uuid']] }).to be_present
         # OSS výpočet číselného vzorce vrací 0; ověřujeme skutečnou pipeline.
         expect(signer.values[formula['uuid']]).to eq(0)
-        expect(Submitter.find(signer.id).values).to eq(signer.values)
+        expect(Submitter.find(signer.id).values).to eq(original_values)
         original.call(signer, *args, **options)
       end
 
@@ -132,6 +166,9 @@ RSpec.describe 'QES signing values', type: :request do
       expect(response).to have_http_status(:ok)
       snapshot = session.reload.tbs_document.blob.metadata['qes_values']
       expect(snapshot).to include(date['uuid'] => expected_date, formula['uuid'] => 0)
+      expect(snapshot[stamp['uuid']]).to be_present
+      expect(submitter.reload.values).to eq(snapshot)
+      expect(submitter.attachments.find_by(uuid: snapshot[stamp['uuid']])).to be_present
       text = Pdfium::Document.open_io(StringIO.new(session.tbs_document.download)) do |pdf|
         (0...pdf.page_count).map { |index| pdf.get_page(index).text }.join("\n")
       end
@@ -139,6 +176,7 @@ RSpec.describe 'QES signing values', type: :request do
       complete_signature(token, session)
 
       travel_to(1.day.from_now) do
+        expect(Submitters::CreateStampAttachment).not_to receive(:build_attachment)
         expect(Submitters::SubmitValues).not_to receive(:merge_default_values)
         expect(Submitters::SubmitValues).not_to receive(:build_formula_values)
 

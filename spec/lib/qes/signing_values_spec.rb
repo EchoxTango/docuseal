@@ -133,13 +133,14 @@ RSpec.describe Qes::SigningValues do
     end
     expect(submitter.reload.completed_at).to be_nil
     expect(submitter.values[stamp['uuid']]).to eq('prepared-stamp')
-    create(:qes_session, submitter:, state: 'completed', level: 'ades')
+    create(:qes_session, :with_values_snapshot, submitter:, state: 'completed', level: 'ades')
 
     Submitters::SubmitValues.finalize_values!(submitter)
     expect(submitter.values[stamp['uuid']]).to eq('prepared-stamp')
   end
 
   it 'rejects direct provider calls before building a TBS with incomplete fields' do
+    allow(Qes::Ltv).to receive(:fetch_first_crl).and_return(QesHelpers.crl)
     submitter.update!(values: {})
     session = create(:qes_session, submitter:, state: 'awaiting_app')
     pkcs = QesHelpers.pkcs12

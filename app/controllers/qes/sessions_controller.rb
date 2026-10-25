@@ -216,6 +216,7 @@ module Qes
         doc_timestamp_state: @session.doc_timestamp_state,
         signing_time: @session.signing_time&.utc&.iso8601,
         validation: @session.validation_report,
+        revocation: @session.validation_report&.[]('revocation'),
         completed_at: @session.completed_at&.utc&.iso8601
       }
     end

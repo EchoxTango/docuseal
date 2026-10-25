@@ -51,6 +51,18 @@ RSpec.describe Qes::Ltv do
 
     before { allow(Qes).to receive(:trust_roots).and_return([root]) }
 
+    it 'requires advertised revocation data even for an explicitly trusted self-signed signer' do
+      factory = OpenSSL::X509::ExtensionFactory.new
+      root.add_extension(factory.create_extension('crlDistributionPoints', 'URI:https://crl.test/root'))
+      root.sign(root_key, OpenSSL::Digest.new('SHA256'))
+      allow(described_class).to receive(:fetch_first_crl).and_raise(Qes::Ltv::FetchError, 'unavailable')
+
+      expect { described_class.fetch_crls(root) }
+        .to raise_error(Qes::ClientError) { |error| expect(error.code).to eq(:ltv_unavailable) }
+      expect { described_class.check_revoked!(root, crls: []) }
+        .to raise_error(Qes::ClientError) { |error| expect(error.code).to eq(:ltv_unavailable) }
+    end
+
     it 'rejects expired and future CRLs, allowing a small clock skew' do
       [
         issue_crl(root, root_key, next_update: Time.current - 600),
@@ -95,6 +107,7 @@ RSpec.describe Qes::Ltv do
       fresh = issue_crl(intermediate, intermediate_key, revoked: [leaf])
       allow(described_class).to receive(:fetch_crls).and_return([fresh])
       session = double('session', state: 'awaiting_signature', certificate: leaf,
+                                  tbs_document: double(blob: double(metadata: { 'qes_values' => {} })),
                                   signed_attrs_der: 'signed attributes', hash_algorithm: 'SHA256',
                                   certificate_chain: [leaf, intermediate].map { |cert| Base64.strict_encode64(cert.to_der) })
       provider = Qes::Providers::MobileApp.new(session)

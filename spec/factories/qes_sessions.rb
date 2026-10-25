@@ -9,5 +9,14 @@ FactoryBot.define do
     field_uuid { submitter.submission.template_fields.find { |f| f['type'] == 'qes' }['uuid'] }
     expires_at { 10.minutes.from_now }
     token_digest { SecureRandom.hex(32) }
+
+    trait :with_values_snapshot do
+      after(:create) do |session|
+        session.tbs_document.attach(
+          io: StringIO.new('%PDF-snapshot'), filename: 'snapshot.pdf', content_type: 'application/pdf',
+          metadata: { qes_values: Qes::ValueValidator.non_qes_values(session.submitter.values, session.submitter) }
+        )
+      end
+    end
   end
 end

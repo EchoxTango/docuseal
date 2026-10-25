@@ -20,15 +20,11 @@ module Qes
     module_function
 
     # CRL objekty pro kontrolu revokace (SPEC § 7.4).
-    # Bez LTV (nevyžadováno a nedostupné) vrací nil.
+    # Bez CRL DP smí být LTV nepovinné. Chyba existujícího DP vždy zastaví podpis.
     def fetch_crls(certificate, chain: [])
       collect_revocation_data(certificate, chain:)
     rescue FetchError => e
-      raise ClientError.new(:ltv_unavailable, e.message) if Qes::Config[:require_ltv]
-
-      Rails.logger.warn("[qes] ltv unavailable: #{e.message}")
-
-      nil
+      raise ClientError.new(:ltv_unavailable, e.message)
     rescue OpenSSL::X509::CertificateError
       # Malformed cert se parsuje až v `CertificateInfo.parse` (422 invalid_certificate).
       nil
@@ -40,7 +36,11 @@ module Qes
       end
       crls = collect_crls(certs)
 
-      raise FetchError, 'No revocation information available' if crls.empty?
+      if crls.empty?
+        raise FetchError, 'No revocation information available' if Qes::Config[:require_ltv]
+
+        return nil
+      end
 
       crls
     end
@@ -48,18 +48,23 @@ module Qes
     # Odmítne certifikát, který je v CRL uvedený jako revokovaný (SPEC § 15.2 N4).
     def check_revoked!(certificate, chain: [], crls: nil)
       crls ||= fetch_crls(certificate, chain:)
-      return if crls.blank?
+      if crls.blank? && Qes::Config[:require_ltv]
+        raise FetchError, 'No revocation information available'
+      end
 
       certs = [certificate, *chain].map do |cert|
         cert.is_a?(OpenSSL::X509::Certificate) ? cert : OpenSSL::X509::Certificate.new(cert)
       end
 
-      certs.each do |cert|
-        next if self_signed?(cert)
+      certs.each_with_index do |cert, index|
+        next if index.positive? && self_signed?(cert)
 
-        crls.each do |crl|
-          next unless crl.issuer == cert.issuer
+        matching = Array(crls).select { |crl| crl.issuer == cert.issuer }
+        if matching.empty? && crl_distribution_point?(cert)
+          raise FetchError, 'No matching CRL available'
+        end
 
+        matching.each do |crl|
           issuer = issuer_for(cert, certs + Qes.trust_roots)
           validate_crl!(crl, cert, issuer)
           next unless crl.revoked.any? { |entry| entry.serial == cert.serial }
@@ -67,14 +72,18 @@ module Qes
           raise ClientError.new(:revoked, 'Certificate is revoked')
         end
       end
+    rescue FetchError => e
+      raise ClientError.new(:ltv_unavailable, e.message)
     end
 
     def collect_crls(certs)
-      certs.flatten.compact.filter_map do |cert|
-        next if self_signed?(cert)
+      certs.flatten.compact.each_with_index.filter_map do |cert, index|
+        next if index.positive? && self_signed?(cert)
 
         urls = crl_urls(cert)
-        next if urls.empty?
+        next unless crl_distribution_point?(cert) || urls.present?
+
+        raise FetchError, 'No usable CRL distribution point' if urls.empty?
 
         crl = fetch_first_crl(urls)
         issuer = issuer_for(cert, certs + Qes.trust_roots)
@@ -193,6 +202,10 @@ module Qes
       urls
     rescue OpenSSL::ASN1::ASN1Error
       []
+    end
+
+    def crl_distribution_point?(cert)
+      cert.extensions.any? { |ext| [CRL_DISTRIBUTION_POINT_OID, 'crlDistributionPoints'].include?(ext.oid) }
     end
 
     def self_signed?(cert)

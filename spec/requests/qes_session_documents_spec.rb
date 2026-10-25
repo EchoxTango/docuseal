@@ -6,7 +6,7 @@ RSpec.describe 'QES token document endpoint', type: :request do
   before do
     QesHelpers.configure!
     stub_memory_cache!
-    allow(Qes::Ltv).to receive(:fetch_crls).and_return([])
+    allow(Qes::Ltv).to receive(:fetch_first_crl).and_return(QesHelpers.crl)
   end
 
   let(:session) { create(:qes_session, state: 'awaiting_app', token_digest: Qes::Token.digest('document')) }
@@ -41,7 +41,8 @@ RSpec.describe 'QES token document endpoint', type: :request do
       expect(range[2] + range[3]).to eq(pdf.bytesize)
       data = range.each_slice(2).map { |offset, length| pdf.byteslice(offset, length) }.join
       digest = OpenSSL::Digest.digest(algorithm, data)
-      expect(payload.fetch('document_digest')).to eq(digest.unpack1('H*'))
+      expect(payload.fetch('document_digest')).to eq(Digest::SHA256.hexdigest(data))
+      expect(session.document_digest).to eq(Digest::SHA256.hexdigest(data))
       attrs = OpenSSL::ASN1.decode(Base64.strict_decode64(payload.fetch('data_to_sign')))
       message_digest = attrs.value.find { |attr| attr.value.first.oid == '1.2.840.113549.1.9.4' }
                             .value.last.value.first.value

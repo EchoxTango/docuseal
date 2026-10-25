@@ -23,6 +23,10 @@ module Qes
 
   # Konfigurace QES (SPEC § 11). Hodnoty se čtou z ENV, testy je mohou přepsat.
   module Config
+    # QES_TSA_URL: RFC 3161 endpoint for signature and document timestamps.
+    # QES_TSA_TRUST_ROOTS: comma-separated PEM file paths for trusted TSA roots.
+    # Required whenever QES_TSA_URL is set, even with QES_TSA_REQUIRED=false.
+    # Without TSA roots, timestamps provide no trusted historical validation time.
     DEFAULTS = {
       enabled: false,
       session_ttl: 600,

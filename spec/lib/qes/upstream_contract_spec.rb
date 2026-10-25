@@ -21,7 +21,14 @@ RSpec.describe 'Upstream contracts used by the QES fork' do
     end
 
     it 'returns verified/trusted/modified per signature' do
-      signature = VerifyPdfSignature.call(StringIO.new(QesHelpers.signed_pdf), []).first
+      pdf = QesHelpers.signed_pdf
+      signature = VerifyPdfSignature.call(StringIO.new(pdf), []).first
+
+      expect(signature).to have_attributes(verified: true, trusted: true, modified: false)
+      expect(signature.messages.map(&:text)).to include(I18n.t('signed_with_trusted_certificate'))
+
+      allow(Qes).to receive(:trust_roots).and_return([])
+      signature = VerifyPdfSignature.call(StringIO.new(pdf), []).first
 
       expect(signature.type).to eq('ETSI.CAdES.detached')
       expect(signature.verified).to be true

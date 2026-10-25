@@ -33,7 +33,10 @@
       </template>
 
       <template v-else-if="phase === 'awaiting_app'">
-        <p class="text-sm text-gray-600 text-center">{{ t('qes_step_waiting') }}</p>
+        <p class="text-sm text-gray-600 text-center">
+          {{ t(session.error === 'signature_in_progress' ? 'qes_step_in_progress' : 'qes_step_waiting') }}
+        </p>
+        <p v-if="error" class="text-sm text-red-700">{{ errorMessage }}</p>
         <div
           v-if="session.qr_svg"
           class="qes-qr bg-white p-2 rounded border"
@@ -54,7 +57,16 @@
         <p class="text-xs text-gray-500">
           {{ expiresInText }}
         </p>
-        <button type="button" class="btn btn-outline btn-sm" @click="cancelSession">
+        <button
+          v-if="session.error === 'signature_in_progress'"
+          type="button"
+          class="btn btn-outline btn-sm"
+          :disabled="restarting"
+          @click="restartSession"
+        >
+          {{ t('qes_step_cancel_restart') }}
+        </button>
+        <button v-else type="button" class="btn btn-outline btn-sm" @click="cancelSession">
           {{ t('qes_step_cancel') }}
         </button>
       </template>
@@ -114,6 +126,7 @@ export default {
       phase: 'idle',
       session: null,
       error: null,
+      restarting: false,
       level: this.field.preferences?.level || 'ades',
       pollTimer: null,
       pollGuard: qesStepCreatePollGuard(),
@@ -172,6 +185,7 @@ export default {
       this.session = null
       const ticket = this.pollGuard.begin(null)
       this.phase = 'creating'
+      this.error = null
       this.$emit('start')
       try {
         const session = await this.post('/qes_sessions', { field_uuid: this.field.uuid })
@@ -271,6 +285,32 @@ export default {
         await this.post(qesStepCancelPath(sessionId), {})
       } catch {
         // zrušení je best-effort; session stejně vyprší
+      }
+    },
+    async restartSession() {
+      if (this.restarting || !this.session) return
+
+      const sessionId = this.session.id
+      this.stopPolling()
+      const ticket = this.pollGuard.begin(sessionId)
+      this.restarting = true
+      this.error = null
+      try {
+        const result = await this.post(qesStepCancelPath(sessionId), {})
+        if (!ticket.isCurrent(this.session?.id)) return
+        if (result.state !== 'cancelled') {
+          this.schedulePoll(0)
+          return
+        }
+
+        await this.createSession()
+      } catch (error) {
+        if (!ticket.isCurrent(this.session?.id)) return
+
+        this.error = error.code || 'network'
+        this.schedulePoll(this.backoff)
+      } finally {
+        this.restarting = false
       }
     },
     reset() {

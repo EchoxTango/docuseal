@@ -17,9 +17,10 @@ module Qes
     def validate!(submitter)
       candidate = Submitter.find(submitter.id)
       prepare!(candidate, with_stamp: false)
+      Qes::TbsDocument.document_manifest(candidate)
     end
 
-    # Volající drží zámek submittera při přípravě a uložení TBS.
+    # Připraví hodnoty v paměti; volající je uloží společně se stavem session.
     def prepare!(submitter, with_stamp: true)
       completed_at = submitter.completed_at
       # Razítko používá čas dokončení; formulář tím ale ještě nedokončujeme.
@@ -38,6 +39,8 @@ module Qes
       raise IncompleteFields, missing if missing.present?
 
       submitter.values
+    rescue Submitters::SubmitValues::ValidationError => e
+      raise Qes::ClientError.new(:values_changed, e.message)
     ensure
       submitter.completed_at = completed_at
     end

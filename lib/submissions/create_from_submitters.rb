@@ -98,6 +98,7 @@ module Submissions
 
         submission.template = nil unless with_template
 
+        submission.submitters.select(&:completed_at?).each { |submitter| validate_qes_completion!(submitter) }
         submission.tap(&:save!)
       end
 
@@ -446,9 +447,21 @@ module Submissions
       submitter.sent_at =
         submitter.preferences['send_email'] != false && email.present? && is_order_sent ? Time.current : nil
 
-      assign_completed_attributes(submitter) if submitter.completed_at?
+      if submitter.completed_at?
+        validate_qes_completion!(submitter)
+        assign_completed_attributes(submitter)
+        Qes::ValueValidator.call(submitter.values, submitter)
+      end
 
       submitter
+    end
+
+    def validate_qes_completion!(submitter)
+      if Qes.missing_required_sessions(submitter).present?
+        raise Submitters::SubmitValues::ValidationError, 'Required QES signatures are missing'
+      end
+
+      Qes::ValueValidator.call(submitter.values, submitter)
     end
 
     def find_phone_field(submission, values)

@@ -34,7 +34,7 @@ RSpec.describe Qes::Validator do
     [key, cert]
   end
 
-  def make_leaf(issuer_cert, issuer_key, eku: nil)
+  def make_leaf(issuer_cert, issuer_key, eku: nil, usage: 'digitalSignature', ca: false)
     key = OpenSSL::PKey::RSA.new(2048)
     cert = OpenSSL::X509::Certificate.new
     cert.version = 2
@@ -47,7 +47,8 @@ RSpec.describe Qes::Validator do
     factory = OpenSSL::X509::ExtensionFactory.new
     factory.subject_certificate = cert
     factory.issuer_certificate = issuer_cert
-    cert.add_extension(factory.create_extension('keyUsage', 'digitalSignature', true))
+    cert.add_extension(factory.create_extension('keyUsage', usage, true)) if usage
+    cert.add_extension(factory.create_extension('basicConstraints', ca ? 'CA:TRUE' : 'CA:FALSE', true))
     cert.add_extension(factory.create_extension('extendedKeyUsage', eku)) if eku
     cert.sign(issuer_key, OpenSSL::Digest.new('SHA256'))
 
@@ -85,6 +86,44 @@ RSpec.describe Qes::Validator do
 
     expect(report[:signatures].first).to include(kind: 'seal', intact: true, trusted: true)
     expect(report[:ok]).to be false
+  end
+
+  [
+    { usage: 'keyEncipherment', ca: false },
+    { usage: 'digitalSignature,keyCertSign', ca: true },
+    { usage: nil, ca: false }
+  ].each do |options|
+    it "rejects an otherwise trusted signer with #{options.inspect} in both verifiers" do
+      root_key, root = make_ca('/CN=Signing Root', nil, nil)
+      key, leaf = make_leaf(root, root_key, **options)
+      leaf.add_extension(OpenSSL::X509::Extension.new('1.3.6.1.5.5.7.1.3', QesHelpers.qc_statements_der.to_der))
+      leaf.sign(root_key, OpenSSL::Digest.new('SHA256'))
+      pkcs = OpenSSL::PKCS12.create('test', 'invalid-usage', key, leaf, [root])
+      allow(Qes).to receive(:trust_roots).and_return([root])
+      pdf = QesHelpers.signed_pdf(pkcs:)
+
+      expect(described_class.trusted_chain?(leaf, [], [root])).to be true
+      report = described_class.call(pdf, trust_roots: [root])
+      expect(report[:signatures].first).to include(intact: true, trusted: false, level: 'qes')
+      expect(report[:ok]).to be false
+      expect(VerifyPdfSignature.call(StringIO.new(pdf), []).first)
+        .to have_attributes(verified: true, trusted: false)
+      pinned = VerifyPdfSignature.call(StringIO.new(pdf), [leaf]).first
+      expect(pinned).to have_attributes(verified: true, trusted: false)
+      expect(pinned.messages.map(&:text)).not_to include(I18n.t('signed_with_trusted_certificate'))
+    end
+  end
+
+  it 'accepts a contentCommitment-only leaf in both verifiers' do
+    root_key, root = make_ca('/CN=Commitment Root', nil, nil)
+    key, leaf = make_leaf(root, root_key, usage: 'nonRepudiation')
+    pkcs = OpenSSL::PKCS12.create('test', 'commitment', key, leaf, [root])
+    allow(Qes).to receive(:trust_roots).and_return([root])
+    pdf = QesHelpers.signed_pdf(pkcs:)
+
+    expect(described_class.call(pdf, trust_roots: [root])[:ok]).to be true
+    expect(VerifyPdfSignature.call(StringIO.new(pdf), []).first)
+      .to have_attributes(verified: true, trusted: true)
   end
 
   it 'does not accept a document containing only a valid DocTS' do
@@ -196,6 +235,29 @@ RSpec.describe Qes::Validator do
         expect(report[:ok]).to be true
         expect(report[:signatures].first).to include(trusted: true, time_source: 'timestamp')
         expect(report[:signatures].last).to include(trusted: true, time_source: 'current', coverage: 'full')
+      end
+    end
+
+    %i[signature_timestamp document_timestamp].each do |evidence|
+      it "agrees with the standalone verifier after expiry using #{evidence}" do
+        stub_tsa!
+        signed = QesHelpers.signed_pdf(pkcs:, tsa_url: evidence == :signature_timestamp ? 'http://tsa.test' : nil)
+        if evidence == :document_timestamp
+          signed, state = Qes::DocTimestamp.apply(signed, tsa_url: 'http://tsa.test')
+          expect(state).to eq('applied')
+        end
+
+        travel_to(later) do
+          expect(described_class.call(signed, trust_roots: [root])[:ok]).to be true
+          standalone = VerifyPdfSignature.call(StringIO.new(signed), [])
+          expect(standalone.first).to have_attributes(verified: true, trusted: true)
+          expect(standalone.any?(&:modified)).to be false
+          expect(standalone.first.messages.map(&:text)).to include(I18n.t('signed_with_trusted_certificate'))
+
+          allow(Qes).to receive(:tsa_trust_roots).and_return([])
+          expect(described_class.call(signed, trust_roots: [root])[:trusted]).to be false
+          expect(VerifyPdfSignature.call(StringIO.new(signed), []).first.trusted).to be false
+        end
       end
     end
 

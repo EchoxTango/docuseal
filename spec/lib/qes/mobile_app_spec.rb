@@ -5,7 +5,7 @@ require 'rails_helper'
 RSpec.describe Qes::Providers::MobileApp do
   before do
     QesHelpers.configure!
-    allow(Qes::Ltv).to receive(:fetch_crls).and_return([])
+    allow(Qes::Ltv).to receive(:fetch_first_crl).and_return(QesHelpers.crl)
   end
 
   let(:session) { create(:qes_session, state: 'awaiting_app') }
@@ -24,7 +24,7 @@ RSpec.describe Qes::Providers::MobileApp do
     expect(session.completed_at).to be_nil
   end
 
-  it 'still rejects values changed after the preparation lock was released' do
+  it 'rejects values changed while the document was being prepared' do
     field = session.submission.template_fields.find { |item| item['type'] == 'text' }
     allow(Qes::CmsBuilder).to receive(:prepare).and_wrap_original do |original, **args|
       session.submitter.update!(values: { field['uuid'] => 'Changed during preparation' })
@@ -80,14 +80,79 @@ RSpec.describe Qes::Providers::MobileApp do
       .to raise_error(Qes::ClientError) { |error| expect(error.code).to eq(:invalid_pdf) }
   end
 
+  it 'returns a client error when completion has no prepared document' do
+    session.update!(state: 'awaiting_signature')
+    allow(session).to receive(:tbs_document).and_return(nil)
+    expect(provider).not_to receive(:ltv_values)
+
+    expect { provider.complete!('signature') }
+      .to raise_error(Qes::ClientError) { |error| expect(error.code).to eq(:document_missing) }
+  end
+
+  it 'returns a client error when the TBS blob or its value snapshot is missing' do
+    session.update!(state: 'awaiting_signature')
+    expect { provider.complete!('signature') }
+      .to raise_error(Qes::ClientError) { |error| expect(error.code).to eq(:document_missing) }
+
+    session.tbs_document.attach(io: StringIO.new('%PDF-incomplete'), filename: 'incomplete.pdf')
+    expect { provider.complete!('signature') }
+      .to raise_error(Qes::ClientError) { |error| expect(error.code).to eq(:document_missing) }
+    expect(session.reload.state).to eq('awaiting_signature')
+  end
+
   it 'keeps the session unprepared when uploading the TBS fails' do
-    session
-    allow(ActiveStorage::Blob).to receive(:create_and_upload!).and_raise(IOError, 'storage unavailable')
+    field = session.submission.template_fields.find { |item| item['type'] == 'text' }
+    date = field.deep_dup.merge('uuid' => SecureRandom.uuid, 'type' => 'date',
+                               'readonly' => true, 'default_value' => '{{date}}')
+    stamp = field.deep_dup.merge('uuid' => SecureRandom.uuid, 'type' => 'stamp',
+                                'preferences' => { 'with_logo' => false })
+    session.submission.update!(template_fields: session.submission.template_fields + [date, stamp])
+    original_values = session.submitter.values.deep_dup
+    original_attachments = session.submitter.attachments.count
+    allow(ActiveStorage::Blob).to receive(:create_and_upload!).and_wrap_original do |original, **args|
+      raise IOError, 'storage unavailable' if args[:filename].start_with?('qes-tbs')
+
+      original.call(**args)
+    end
 
     expect { prepare_document }.to raise_error(IOError, 'storage unavailable')
     expect(session.reload.state).to eq('awaiting_app')
     expect(session.tbs_document).not_to be_attached
     expect(session.signed_attrs_der).to be_nil
+    expect(session.submitter.reload.values).to eq(original_values)
+    expect(session.submitter.attachments.count).to eq(original_attachments)
+  end
+
+  it 'does not persist prepared defaults when the session is cancelled during upload' do
+    field = session.submission.template_fields.find { |item| item['type'] == 'text' }
+    session.submitter.update!(values: { field['uuid'] => '{{date}}' })
+    original_values = session.submitter.values.deep_dup
+    allow(ActiveStorage::Blob).to receive(:create_and_upload!).and_wrap_original do |original, **args|
+      blob = original.call(**args)
+      QesSession.find(session.id).update!(state: 'cancelled') if args[:filename].start_with?('qes-tbs')
+      blob
+    end
+
+    expect { prepare_document }.to raise_error(Qes::ClientError) do |error|
+      expect(error.code).to eq(:wrong_state)
+    end
+    expect(session.reload.state).to eq('cancelled')
+    expect(session.tbs_document).not_to be_attached
+    expect(session.submitter.reload.values).to eq(original_values)
+  end
+
+  it 'rolls prepared values back if the state transition fails' do
+    field = session.submission.template_fields.find { |item| item['type'] == 'text' }
+    session.submitter.update!(values: { field['uuid'] => '{{date}}' })
+    original_values = session.submitter.values.deep_dup
+    allow(Qes::SessionManager).to receive(:transition!).and_call_original
+    allow(Qes::SessionManager).to receive(:transition!).with(session, 'awaiting_signature')
+                                                     .and_raise(Qes::InvalidTransition, 'transition failed')
+
+    expect { prepare_document }.to raise_error(Qes::InvalidTransition, 'transition failed')
+    expect(session.reload.state).to eq('awaiting_app')
+    expect(session.tbs_document).not_to be_attached
+    expect(session.submitter.reload.values).to eq(original_values)
   end
 
   %w[qes-signed qes-final].each do |prefix|

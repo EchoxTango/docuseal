@@ -27,7 +27,7 @@ module Qes
         signature[:ByteRange].value if accepted_signature?(result)
       end
       pdfium = pdfium_report(pdf_bytes, trusted_certs, trusted_ranges:,
-                            allow_dss_changes: current_signature_range.present?)
+                            allow_dss_changes: true)
       inspection = if pdfium && pdfium.size == results.size && pdfium.all? { |signature| signature[:verified] }
                      'complete'
                    else
@@ -41,15 +41,17 @@ module Qes
       end
       last = results.last
       level = qes_results.last ? qes_results.last[:level] : 'none'
+      coverage_valid = last && covered_document?(pdf_bytes, signatures.last, last[:coverage])
 
       {
         ok: inspection == 'complete' && !pdfium.any? { |signature| signature[:modified] } &&
             qes_results.present? && current_present && results.all? { |r| valid_for_scope?(r) } &&
-            last[:coverage] == 'full',
+            coverage_valid,
         intact: results.present? && results.all? { |result| result[:intact] },
         trusted: current_present && current_qes.present? && current_qes.all? { |result| result[:trusted] },
         validation_scope: current_signature_range ? 'current_revision' : 'document',
         coverage: last ? last[:coverage] : 'none',
+        coverage_valid: !!coverage_valid,
         level:,
         modified: pdfium.any? { |signature| signature[:modified] },
         signatures: results,
@@ -112,6 +114,7 @@ module Qes
       # self-signed certifikát stal sám sobě trust rootem.
       chain = pkcs7.certificates&.reject { |cert| cert.to_der == signer_cert&.to_der } || []
       result[:trusted] = result[:intact] && result[:qes] &&
+                         signer_cert && Qes::CertificateInfo.new(signer_cert).signing_leaf? &&
                          trusted_chain?(signer_cert, chain, trust_roots, at: validation_time)
       if result[:kind] == 'seal'
         result[:trusted] = result[:intact] && VerifyPdfSignature.trusted_certificate?(pkcs7, trusted_certs)
@@ -245,7 +248,16 @@ module Qes
         byte_range[2] + byte_range[3] <= pdf_bytes.bytesize
     end
 
-    # Poslední podpis musí krýt celý soubor; starší mohou krýt vlastní revizi.
+    # Partial ByteRange coverage is acceptable only for a DSS-only tail.
+    def covered_document?(pdf_bytes, signature, coverage)
+      return true if coverage == 'full'
+      return false unless coverage == 'partial'
+
+      range = signature[:ByteRange].value
+      Qes::RevisionChanges.allowed?(pdf_bytes, range[2] + range[3])
+    end
+
+    # Raw byte coverage remains visible even when a DSS-only tail is allowed.
     def coverage(pdf_bytes, signature)
       return 'none' unless valid_byte_range?(pdf_bytes, signature)
 

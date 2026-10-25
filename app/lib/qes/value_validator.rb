@@ -30,8 +30,10 @@ module Qes
 
     def validate_signed_values!(values, submitter)
       submitter.qes_sessions.completed.each do |session|
-        snapshot = session.tbs_document.blob&.metadata&.fetch('qes_values', nil)
-        snapshot ||= non_qes_values(submitter.values_in_database, submitter)
+        snapshot = session.tbs_document&.blob&.metadata&.fetch('qes_values', nil)
+        unless snapshot.is_a?(Hash)
+          raise Submitters::SubmitValues::ValidationError, 'Signed field values cannot be verified'
+        end
 
         next if non_qes_values(values, submitter) == snapshot &&
                 non_qes_values(submitter.values, submitter) == snapshot

@@ -27,6 +27,10 @@ module QesHelpers
     OpenSSL::X509::Certificate.new(TEST_DIR.join('certs', 'signer.cert.pem').read)
   end
 
+  def crl
+    OpenSSL::X509::CRL.new(pki_path('root.crl').binread)
+  end
+
   def trust_roots
     [OpenSSL::X509::Certificate.new(pki_path('root.crt').read)]
   end
