@@ -27,6 +27,17 @@ module Qes
       render json: payload
     end
 
+    def document
+      return render_qes_error_with(:expired_token, :gone) if @session.expired?
+      return render_qes_error_with(:used_token, :gone) if @session.terminal?
+      return render_qes_error_with(:wrong_state, :conflict) unless @session.state == 'awaiting_signature'
+      return render_qes_error_with(:document_missing, :conflict) unless @session.tbs_document.attached?
+
+      response.set_header('Cache-Control', 'no-store')
+      send_data @session.tbs_document.download, type: 'application/pdf', disposition: 'inline',
+                                                filename: "qes-tbs-#{@session.id}.pdf"
+    end
+
     def certificate
       return render_qes_error_with(:expired_token, :gone) if @session.expired?
       return render_qes_error_with(:used_token, :gone) if @session.terminal?
@@ -50,20 +61,13 @@ module Qes
       # CRL fetch (síť) mimo DB transakci; transakce pak drží jen zápis (M20).
       crls = Qes::Ltv.fetch_crls(certificate_der, chain:)
 
-      prepared = provider.data_to_sign(certificate_der, chain:, key_location:,
-                                                        app_metadata: params[:app].presence,
-                                                        crls: crls || [])
+      provider.data_to_sign(certificate_der, chain:, key_location:,
+                                            app_metadata: params[:app].presence,
+                                            crls: crls || [])
 
       Qes.log(@session)
 
-      render json: {
-        data_to_sign: Base64.strict_encode64(prepared[:signed_attrs_der]),
-        hash_algorithm: prepared[:hash_algorithm],
-        digest_algorithm_oid: prepared[:digest_algorithm_oid],
-        signature_algorithm: prepared[:signature_algorithm],
-        expires_at: @session.expires_at.utc.iso8601,
-        certificate_info: prepared[:certificate_info]
-      }
+      render json: certificate_payload
     rescue Qes::ClientError => e
       QesSession.where(id: @session.id).update_all(failure_code: e.code.to_s)
       @session.reload
@@ -185,7 +189,9 @@ module Qes
         digest_algorithm_oid: Qes::CmsBuilder::DIGEST_ALGORITHM_OIDS.fetch(@session.hash_algorithm),
         signature_algorithm: @session.signature_algorithm,
         expires_at: @session.expires_at&.utc&.iso8601,
-        certificate_info: @session.certificate_info
+        certificate_info: @session.certificate_info,
+        byte_range: Qes::TbsDocument.byte_range(@session.tbs_document.download),
+        document_digest: @session.document_digest
       }
     end
 

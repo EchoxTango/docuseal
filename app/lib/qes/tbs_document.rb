@@ -121,11 +121,11 @@ module Qes
       signature&.[](:ByteRange)&.value&.map(&:to_i)
     end
 
-    def document_digest(pdf_bytes)
+    def document_digest(pdf_bytes, algorithm: 'sha256')
       range = byte_range(pdf_bytes)
       return nil if range.blank?
 
-      Digest::SHA256.hexdigest(signed_data(StringIO.new(pdf_bytes), range))
+      OpenSSL::Digest.hexdigest(algorithm, signed_data(StringIO.new(pdf_bytes), range))
     end
   end
 end

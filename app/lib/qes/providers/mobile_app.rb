@@ -63,7 +63,7 @@ module Qes
 
           session.tbs_document.attach(tbs_blob)
           session.update!(
-            document_digest: Qes::TbsDocument.document_digest(tbs_pdf),
+            document_digest: Qes::TbsDocument.document_digest(tbs_pdf, algorithm: session.hash_algorithm),
             signed_attrs_der: prepared[:signed_attrs_der],
             certificate_info: certificate_info,
             certificate_chain: [certificate_der, *normalize_chain(chain)].map { |der| Base64.strict_encode64(der) },

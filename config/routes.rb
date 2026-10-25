@@ -155,6 +155,7 @@ Rails.application.routes.draw do
   namespace :qes do
     resources :sessions, only: %i[show], param: :token, path: 'sessions' do
       member do
+        get :document
         post :certificate
         post :complete
         post :abort
