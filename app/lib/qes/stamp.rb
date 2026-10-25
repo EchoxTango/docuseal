@@ -30,9 +30,9 @@ module Qes
       w = area.present? ? area['w'].to_f * width : MIN_WIDTH
       h = area.present? ? area['h'].to_f * height : MIN_HEIGHT
 
-      w = [[w, MIN_WIDTH].max, [width - x, 10].max].min
-      h = [[h, MIN_HEIGHT].max, [height - top, 10].max].min
-      y = [height - top - h, 0].max
+      return unless w.positive? && h.positive?
+
+      y = height - top - h
 
       lines = stamp_lines(submitter)
       return if lines.empty?
@@ -43,21 +43,26 @@ module Qes
       canvas = page.canvas(type: :overlay)
 
       canvas.save_graphics_state do
+        # Ořez platí i pro text a tah okraje, včetně velmi malých polí.
+        canvas.rectangle(x, y, w, h).clip_path.end_path
         canvas.line_width(0.7)
         canvas.stroke_color(0x29, 0x13, 0x34)
         canvas.fill_color(0xF6, 0xF1, 0xF9)
-        canvas.rectangle(x + 1, y + 1, [w - 2, 1].max, [h - 2, 1].max, radius: 2).fill_stroke
-      end
+        if w > 2 && h > 2
+          radius = [2, (w - 2) / 2, (h - 2) / 2].min
+          canvas.rectangle(x + 1, y + 1, w - 2, h - 2, radius:).fill_stroke
+        end
 
-      canvas.fill_color(0x29, 0x13, 0x34)
-      canvas.font(font, size: font_size)
+        canvas.fill_color(0x29, 0x13, 0x34)
+        canvas.font(font, size: font_size)
 
-      line_height = font_size * 1.3
-      lines.each_with_index do |line, index|
-        baseline = y + h - padding - font_size - (line_height * index)
-        next if baseline < y
+        line_height = font_size * 1.3
+        lines.each_with_index do |line, index|
+          baseline = y + h - padding - font_size - (line_height * index)
+          next if baseline < y
 
-        canvas.text(fit_text(font, line, font_size, w - (2 * padding)), at: [x + padding, baseline])
+          canvas.text(fit_text(font, line, font_size, w - (2 * padding)), at: [x + padding, baseline])
+        end
       end
     end
 
