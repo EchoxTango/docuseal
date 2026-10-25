@@ -14,13 +14,19 @@ module Qes
         signature[:ByteRange].value if accepted_signature?(result)
       end
       pdfium = pdfium_report(pdf_bytes, trusted_certs, trusted_ranges:)
+      inspection = if pdfium && pdfium.size == results.size && pdfium.all? { |signature| signature[:verified] }
+                     'complete'
+                   else
+                     'indeterminate'
+                   end
+      pdfium ||= []
       qes_results = results.select { |result| result[:qes] }
       last = results.last
       level = qes_results.last ? qes_results.last[:level] : 'none'
 
       {
-        ok: results.present? && results.all? { |r| r[:intact] } &&
-            results.all? { |r| accepted_signature?(r) } && last[:coverage] == 'full',
+        ok: inspection == 'complete' && !pdfium.any? { |signature| signature[:modified] } &&
+            results.present? && results.all? { |r| accepted_signature?(r) } && last[:coverage] == 'full',
         intact: results.present? && results.all? { |result| result[:intact] },
         trusted: qes_results.present? && qes_results.all? { |result| result[:trusted] },
         coverage: last ? last[:coverage] : 'none',
@@ -28,6 +34,7 @@ module Qes
         modified: pdfium.any? { |signature| signature[:modified] },
         signatures: results,
         pdfium:,
+        inspection:,
         trusted_roots: trust_roots.map { |cert| cert.subject.to_s },
         validated_at: at.utc.iso8601
       }
@@ -192,7 +199,7 @@ module Qes
     rescue StandardError => e
       Rails.logger.warn("[qes] pdfium validation failed: #{e.class}")
 
-      []
+      nil
     end
   end
 end

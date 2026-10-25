@@ -21,7 +21,8 @@ module Qes
 
       {
         file: { name:, size: pdf_bytes.bytesize, sha256: Digest::SHA256.hexdigest(pdf_bytes) },
-        verdict: compute_verdict(signatures, qes, modified),
+        verdict: compute_verdict(signatures, qes, modified, inspection: report[:inspection]),
+        inspection: report[:inspection],
         intact: report[:intact],
         trusted: report[:trusted],
         modified:,
@@ -52,9 +53,11 @@ module Qes
       []
     end
 
-    def compute_verdict(signatures, qes, modified)
+    def compute_verdict(signatures, qes, modified, inspection: 'complete')
+      return 'invalid' unless inspection == 'complete'
       return 'unsigned' if signatures.empty?
       return 'invalid' if signatures.any? { |signature| !signature[:intact] } || modified
+      return 'invalid' unless signatures.last[:coverage] == 'full'
       return 'valid_untrusted' unless signatures.all? { |signature| Qes::Validator.accepted_signature?(signature) }
       return 'valid_unqualified' if qes.empty?
 

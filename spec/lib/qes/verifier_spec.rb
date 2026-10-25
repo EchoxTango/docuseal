@@ -29,6 +29,33 @@ RSpec.describe Qes::Verifier do
     expect(report[:file][:sha256]).to eq(Digest::SHA256.hexdigest(pdf))
   end
 
+  it 'returns an indeterminate inspection and invalid verdict on parser failure' do
+    signed = pdf
+    allow(VerifyPdfSignature).to receive(:call).and_raise(StandardError, 'parser failed')
+
+    report = described_class.call(signed, name: 'parser-failure.pdf')
+
+    expect(report[:inspection]).to eq('indeterminate')
+    expect(report[:verdict]).to eq('invalid')
+    expect(Qes::Validator.call(signed, trust_roots: QesHelpers.trust_roots)[:ok]).to be false
+  end
+
+  it 'returns indeterminate when parsers disagree about the signatures' do
+    signed = pdf
+    allow(VerifyPdfSignature).to receive(:call).and_return([])
+
+    report = described_class.call(signed, name: 'parser-disagreement.pdf')
+
+    expect(report[:inspection]).to eq('indeterminate')
+    expect(report[:verdict]).to eq('invalid')
+  end
+
+  it 'does not accept partial coverage even when the secondary parser reports no changes' do
+    signature = { kind: 'qes', intact: true, trusted: true, coverage: 'partial' }
+
+    expect(described_class.compute_verdict([signature], [signature], false)).to eq('invalid')
+  end
+
   it 'recognizes a QES certificate' do
     report = described_class.call(QesHelpers.signed_pdf(pkcs: QesHelpers.pkcs12('signer-qscd.p12')),
                                  name: 'qes.pdf')
@@ -73,13 +100,14 @@ RSpec.describe Qes::Verifier do
     expect(report[:modified]).to be true
   end
 
-  it 'keeps a DSS/LTV update valid' do
+  it 'requires a covering signature after a DSS/LTV update' do
     crl = OpenSSL::X509::CRL.new(QesHelpers.pki_path('root.crl').binread)
     with_dss = Qes::Dss.apply(pdf, crls: [crl.to_der])
 
     report = described_class.call(with_dss, name: 'with-dss.pdf')
 
-    expect(report[:verdict]).to eq('valid')
+    expect(report[:verdict]).to eq('invalid')
+    expect(report[:coverage]).to eq('partial')
     expect(report[:modified]).to be false
   end
 

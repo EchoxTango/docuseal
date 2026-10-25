@@ -167,7 +167,8 @@ module Qes
         # k podpisu před DSS. Tady se kontroluje INTACT všech signatur a trusted
         # QES; pečeť a DocTS ověřuje `pdfium`/`seal` report.
         final_report = validate(final_pdf)
-        unless final_report[:intact] && final_report[:trusted] &&
+        unless final_report[:inspection] == 'complete' && !final_report[:modified] &&
+               final_report[:intact] && final_report[:trusted] &&
                final_report[:signatures].all? { |result| Qes::Validator.accepted_signature?(result) }
           raise ClientError.new(:validation_failed, 'Signature validation failed')
         end
