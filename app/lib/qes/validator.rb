@@ -9,7 +9,16 @@ module Qes
     def call(pdf_bytes, trust_roots: [], trusted_certs: trust_roots, at: Time.current)
       io = StringIO.new(pdf_bytes)
       signatures = signature_dicts(pdf_bytes)
-      results = signatures.map { |signature| verify_one(signature, io, trust_roots, trusted_certs:) }
+      timestamps = document_timestamps(signatures, io, at:)
+      results = signatures.map do |signature|
+        byte_range = signature[:ByteRange]&.value
+        signed_end = byte_range[2] + byte_range[3] if valid_byte_range?(pdf_bytes, signature)
+        timestamp_time = timestamps.filter_map do |range, time|
+          time if signed_end && range[1] >= signed_end
+        end.min
+
+        verify_one(signature, io, trust_roots, trusted_certs:, at:, timestamp_time:)
+      end
       trusted_ranges = signatures.zip(results).filter_map do |signature, result|
         signature[:ByteRange].value if accepted_signature?(result)
       end
@@ -47,7 +56,7 @@ module Qes
       doc.signatures.to_a
     end
 
-    def verify_one(signature, io, trust_roots, trusted_certs: [])
+    def verify_one(signature, io, trust_roots, trusted_certs: [], at: Time.current, timestamp_time: nil)
       byte_range = signature[:ByteRange]&.value&.map(&:to_i)
       contents = signature[:Contents].to_s
       sub_filter = signature[:SubFilter].to_s
@@ -55,9 +64,10 @@ module Qes
       result = { sub_filter:, kind: kind_for(sub_filter), qes: sub_filter == 'ETSI.CAdES.detached',
                  signing_time: nil, common_name: nil, subject: nil, issuer: nil, serial: nil,
                  not_before: nil, not_after: nil, chain: [], level: 'none',
-                 intact: false, trusted: false, tsa_trusted: false, coverage: 'none' }
+                 intact: false, trusted: false, tsa_trusted: false, coverage: 'none',
+                 validated_at_time: at.utc.iso8601, time_source: 'current' }
 
-      return result if byte_range.blank? || contents.blank?
+      return result unless valid_byte_range?(io.string, signature)
 
       data = Qes::TbsDocument.signed_data(io, byte_range)
       pkcs7 = OpenSSL::PKCS7.new(contents)
@@ -72,15 +82,23 @@ module Qes
       result[:chain] = pkcs7.certificates&.map { |cert| cert.subject.to_s } || []
       result[:signing_time] = signing_time(pkcs7)
       result[:level] = signer_cert ? Qes::CertificateInfo.new(signer_cert).level : 'none'
-      result[:intact] = verify_cms(pkcs7, data, trust_roots, sub_filter)
-      result[:tsa_trusted] = result[:kind] == 'timestamp' && result[:intact] && Qes.tsa_trust_roots.any?
+      result[:intact] = verify_cms(pkcs7, data, trust_roots, sub_filter, at:)
+      evidence_time = if result[:kind] == 'timestamp'
+                        Qes::TimestampToken.verified_time(pkcs7, data, at:)
+                      else
+                        [timestamp_time, Qes::TimestampToken.signature_time(pkcs7, at:)].compact.min
+                      end
+      validation_time = evidence_time || at
+      result[:validated_at_time] = validation_time.utc.iso8601
+      result[:time_source] = evidence_time ? 'timestamp' : 'current'
+      result[:tsa_trusted] = evidence_time.present? && Qes.tsa_trust_roots.any?
       # Trust roots QES se vztahují jen na podpisy appky (CAdES); pečeť
       # DocuSealu (adbe.pkcs7.detached) se ověřuje vlastním certem účtu.
       # Ze řetězu se musí vynechat cert podepisujícího, jinak by se
       # self-signed certifikát stal sám sobě trust rootem.
       chain = pkcs7.certificates&.reject { |cert| cert.to_der == signer_cert&.to_der } || []
       result[:trusted] = result[:intact] && result[:qes] &&
-                         trusted_chain?(signer_cert, chain, trust_roots)
+                         trusted_chain?(signer_cert, chain, trust_roots, at: validation_time)
       if result[:kind] == 'seal'
         result[:trusted] = result[:intact] && VerifyPdfSignature.trusted_certificate?(pkcs7, trusted_certs)
       end
@@ -89,6 +107,22 @@ module Qes
       result
     rescue OpenSSL::PKCS7::PKCS7Error, OpenSSL::ASN1::ASN1Error
       result
+    end
+
+    # DocTS musí krýt celou starší revizi včetně hodnoty podpisu.
+    def document_timestamps(signatures, io, at:)
+      signatures.filter_map do |signature|
+        next unless signature[:SubFilter].to_s == 'ETSI.RFC3161'
+        next unless valid_byte_range?(io.string, signature)
+
+        range = signature[:ByteRange].value
+        token = OpenSSL::PKCS7.new(signature[:Contents].to_s)
+        time = Qes::TimestampToken.verified_time(token, Qes::TbsDocument.signed_data(io, range), at:)
+
+        [range, time] if time
+      rescue OpenSSL::PKCS7::PKCS7Error, OpenSSL::ASN1::ASN1Error
+        nil
+      end
     end
 
     def accepted_signature?(result)
@@ -120,16 +154,16 @@ module Qes
 
     # Kryptografie je v `VerifyPdfSignature` (jeden zdroj pravdy pro pečeť i
     # QES podpisy); tady se jen rozlišuje DocTS a přidává trust vůči QES rootům.
-    def verify_cms(pkcs7, data, trust_roots, sub_filter)
+    def verify_cms(pkcs7, data, trust_roots, sub_filter, at: Time.current)
       if sub_filter == 'ETSI.RFC3161'
-        verify_timestamp(pkcs7, data)
+        verify_timestamp(pkcs7, data, at:)
       else
         VerifyPdfSignature.verify_contents(pkcs7, data, trust_roots)
       end
     end
 
-    def verify_timestamp(pkcs7, data)
-      Qes::TimestampToken.verify(pkcs7, data)
+    def verify_timestamp(pkcs7, data, at: Time.current)
+      Qes::TimestampToken.verify(pkcs7, data, at:)
     rescue OpenSSL::Timestamp::TimestampError, OpenSSL::ASN1::ASN1Error
       false
     end
@@ -149,11 +183,12 @@ module Qes
     # Důvěryhodnost vůči trust rootům. Do store se musí přidat i intermediate
     # certifikáty z CMS — bez nich OpenSSL řetěz nepostaví a reálné kvalifikované
     # certifikáty (I.CA/PostSignum) by vycházely jako nedůvěryhodné.
-    def trusted_chain?(certificate, chain, trust_roots)
+    def trusted_chain?(certificate, chain, trust_roots, at: Time.current)
       return false if certificate.nil? || trust_roots.blank?
 
       store = OpenSSL::X509::Store.new
       store.purpose = OpenSSL::X509::PURPOSE_SMIME_SIGN
+      store.time = at
       trust_roots.each { |cert| store.add_cert(cert) }
 
       # `chain` jsou untrusted intermediate certifikáty z CMS; do store se
@@ -171,18 +206,21 @@ module Qes
       end
     end
 
-    # Podpis pokrývá celý soubor, pokud ByteRange sahá od začátku do konce
-    # dokumentu (mezera je jen `/Contents`).
+    def valid_byte_range?(pdf_bytes, signature)
+      byte_range = signature[:ByteRange]&.value
+      return false unless byte_range&.size == 4 && byte_range.all? { |value| value.is_a?(Integer) && value >= 0 }
+      return false unless byte_range[0].zero? && signature[:Contents].to_s.present?
+
+      byte_range[2] == byte_range[1] + (signature[:Contents].to_s.bytesize * 2) + 2 &&
+        byte_range[2] + byte_range[3] <= pdf_bytes.bytesize
+    end
+
+    # Poslední podpis musí krýt celý soubor; starší mohou krýt vlastní revizi.
     def coverage(pdf_bytes, signature)
-      byte_range = signature[:ByteRange]&.value&.map(&:to_i)
-      return 'none' if byte_range.blank? || byte_range.size != 4
-      return 'none' if byte_range.any?(&:negative?) || !byte_range[0].zero?
+      return 'none' unless valid_byte_range?(pdf_bytes, signature)
 
-      contents_size = signature[:Contents].to_s.bytesize
-      full = byte_range[2] == byte_range[1] + (contents_size * 2) + 2 &&
-             byte_range[2] + byte_range[3] == pdf_bytes.bytesize
-
-      full ? 'full' : 'partial'
+      byte_range = signature[:ByteRange].value
+      byte_range[2] + byte_range[3] == pdf_bytes.bytesize ? 'full' : 'partial'
     end
 
     def pdfium_report(pdf_bytes, trusted_certs, trusted_ranges:)

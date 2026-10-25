@@ -41,6 +41,15 @@ RSpec.describe Qes::TimestampToken do
     expect(described_class.verify(other, data, trust_roots: [QesHelpers.tsa_root_certificate])).to be false
   end
 
+  it 'rejects future timestamp evidence' do
+    future = OpenSSL::PKCS7.new(QesHelpers.build_timestamp_token(
+      OpenSSL::Digest.digest('SHA256', data), key: QesHelpers.tsa_key,
+      certificate: QesHelpers.tsa_certificate, at: Time.current + 600
+    ))
+
+    expect(described_class.verify(future, data)).to be false
+  end
+
   it 'loads comma-separated PEM paths' do
     Qes::Config[:tsa_trust_roots] = " #{QesHelpers.pki_path('root.crt')}, #{QesHelpers.pki_path('root.crt')} "
 

@@ -93,6 +93,8 @@ module Qes
         issuer: signature[:issuer],
         serial: signature[:serial],
         signing_time: signature[:signing_time],
+        validated_at_time: signature[:validated_at_time],
+        time_source: signature[:time_source],
         not_before: signature[:not_before],
         not_after: signature[:not_after],
         chain: signature[:chain] || []

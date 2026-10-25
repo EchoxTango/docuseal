@@ -83,7 +83,7 @@ module QesHelpers
   # Podepsané PDF bez appky (stejná pipeline jako produkce): TBS → CMS →
   # PAdES; `seal: true` přidá inkrementální pečeť DocuSealu. Pro testy
   # ověření (docs/16) stačí `signed_pdf` bez LTV.
-  def signed_pdf(pkcs: pkcs12, seal: false, submitter: nil)
+  def signed_pdf(pkcs: pkcs12, seal: false, submitter: nil, tsa_url: nil)
     submitter ||= build_qes_submitter
     field = submitter.submission.template_fields.find { |f| f['type'] == 'qes' }
     tbs_pdf = Qes::TbsDocument.build(submitter, field)
@@ -94,7 +94,7 @@ module QesHelpers
     signature = pkcs.key.sign(OpenSSL::Digest.new('SHA256'), prepared[:signed_attrs_der])
     cms_der = Qes::CmsBuilder.complete(data:, signed_attrs_der: prepared[:signed_attrs_der],
                                         signature:, certificate: pkcs.certificate,
-                                        chain: pkcs.ca_certs)
+                                        chain: pkcs.ca_certs, tsa_url:)
 
     signed = Qes::Embed.call(tbs_pdf, cms_der)
     return signed unless seal
@@ -183,7 +183,7 @@ module QesHelpers
     end
   end
 
-  def build_timestamp_token(imprint, key:, certificate:, algorithm: 'SHA256')
+  def build_timestamp_token(imprint, key:, certificate:, algorithm: 'SHA256', at: Time.current)
     digest_algorithm = OpenSSL::ASN1::Sequence.new([
       OpenSSL::ASN1::ObjectId.new('2.16.840.1.101.3.4.2.1'), OpenSSL::ASN1::Null.new(nil)
     ])
@@ -192,7 +192,7 @@ module QesHelpers
       OpenSSL::ASN1::ObjectId.new('1.2.3.4.1'),
       OpenSSL::ASN1::Sequence.new([digest_algorithm, OpenSSL::ASN1::OctetString.new(imprint)]),
       OpenSSL::ASN1::Integer.new(OpenSSL::BN.rand(64)),
-      OpenSSL::ASN1::GeneralizedTime.new(Time.now.utc)
+      OpenSSL::ASN1::GeneralizedTime.new(at.utc)
     ]).to_der
     attributes = OpenSSL::ASN1::Set.new([
       OpenSSL::ASN1::Sequence.new([
