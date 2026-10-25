@@ -16,7 +16,7 @@ module Qes
       # Provede celý obřad synchronně: přechody stavů jako reálný tok +
       # kryptografie z MobileApp. Vrací [pdf_bytes, validation_report].
       def sign!(submitter, field, key_location: 'phone_keystore', app_metadata: nil)
-        advance_to_awaiting_signature!
+        advance_to_app_opened!
 
         prepared = data_to_sign(pkcs.certificate.to_der, chain: pkcs.ca_certs || [],
                                 key_location:, app_metadata:,
@@ -27,11 +27,10 @@ module Qes
         complete!(signature)
       end
 
-      def advance_to_awaiting_signature!
+      def advance_to_app_opened!
         Qes::SessionManager.transition!(session, 'prepared') if session.state == 'created'
         Qes::SessionManager.transition!(session, 'awaiting_app') if session.state == 'prepared'
         Qes::SessionManager.transition!(session, 'app_opened') if session.state == 'awaiting_app'
-        Qes::SessionManager.transition!(session, 'awaiting_signature') if session.state == 'app_opened'
       end
 
       def pkcs

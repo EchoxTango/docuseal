@@ -47,19 +47,12 @@ module Qes
       return render_qes_error_with(:wrong_state, :conflict) unless @session.state.in?(%w[awaiting_app app_opened])
 
       provider = provider_for(@session)
-      prepared = nil
       # CRL fetch (síť) mimo DB transakci; transakce pak drží jen zápis (M20).
       crls = Qes::Ltv.fetch_crls(certificate_der, chain:)
 
-      QesSession.transaction do
-        Qes::SessionManager.transition!(@session, 'app_opened') if @session.state == 'awaiting_app'
-        prepared = provider.data_to_sign(certificate_der, chain:, key_location:,
-                                                          app_metadata: params[:app].presence,
-                                                          crls: crls || [])
-        Qes::SessionManager.transition!(@session, 'awaiting_signature')
-        # Úspěšné přijetí certifikátu maže diagnostiku předchozího odmítnutí.
-        @session.update!(failure_code: nil, failure_message: nil) if @session.failure_code.present?
-      end
+      prepared = provider.data_to_sign(certificate_der, chain:, key_location:,
+                                                        app_metadata: params[:app].presence,
+                                                        crls: crls || [])
 
       Qes.log(@session)
 
