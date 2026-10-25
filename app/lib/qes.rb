@@ -108,6 +108,16 @@ module Qes
     end
   end
 
+  def self.missing_required_sessions(submitter)
+    sessions = submitter.qes_sessions.completed.to_a
+
+    template_fields(submitter.submission).select do |field|
+      next unless field['type'] == 'qes' && field['required'] && field['submitter_uuid'] == submitter.uuid
+
+      sessions.none? { |session| session.field_uuid == field['uuid'] && session_satisfies_level?(session, field) }
+    end
+  end
+
   def self.session_satisfies_level?(session, field)
     required = field.dig('preferences', 'level').presence || 'ades'
 
