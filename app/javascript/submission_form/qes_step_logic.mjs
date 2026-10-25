@@ -62,3 +62,30 @@ export function terminalPhase (state) {
 
   return null
 }
+
+// Každý požadavek patří ke generaci i konkrétní session.
+export function createPollGuard () {
+  let generation = 0
+  let controller = null
+
+  function invalidate () {
+    generation += 1
+    controller?.abort()
+    controller = null
+  }
+
+  return {
+    invalidate,
+    begin (sessionId) {
+      invalidate()
+      const capturedGeneration = generation
+      controller = new AbortController()
+
+      return {
+        sessionId,
+        signal: controller.signal,
+        isCurrent: (currentSessionId) => generation === capturedGeneration && currentSessionId === sessionId
+      }
+    }
+  }
+}

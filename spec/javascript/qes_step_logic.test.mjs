@@ -8,6 +8,7 @@ import {
   ERROR_KEYS,
   cancelPath,
   cancelledState,
+  createPollGuard,
   doneText,
   errorKey,
   expiresInText,
@@ -86,4 +87,128 @@ test('form.vue and area.vue keep the QesStep integration', () => {
   assert.match(form, /import QesStep from '\.\/qes_step'/)
   assert.match(form, /currentField\.type === 'qes'/)
   assert.match(area, /field\.type === 'qes'/)
+})
+
+
+test('invalidates poll tickets and aborts their requests', () => {
+  const guard = createPollGuard()
+  const old = guard.begin(1)
+  assert.equal(old.isCurrent(1), true)
+  assert.equal(old.isCurrent(2), false)
+  guard.invalidate()
+  assert.equal(old.signal.aborted, true)
+  assert.equal(old.isCurrent(1), false)
+  const replacement = guard.begin(1)
+  assert.equal(old.isCurrent(1), false)
+  assert.equal(replacement.isCurrent(1), true)
+})
+
+function deferred () {
+  let resolve
+  const promise = new Promise((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+async function componentInstance () {
+  const source = readFileSync(new URL('../../app/javascript/submission_form/qes_step.vue', import.meta.url), 'utf8')
+  const logicUrl = new URL('../../app/javascript/submission_form/qes_step_logic.mjs', import.meta.url).href
+  const script = source.match(/<script>([\s\S]*?)<\/script>/)[1]
+    .replace("'./qes_step_logic.mjs'", JSON.stringify(logicUrl))
+  const component = (await import(`data:text/javascript,${encodeURIComponent(script)}`)).default
+  const emissions = []
+  const timers = []
+  const vm = {
+    ...component.data.call({ field: {} }),
+    field: { uuid: 'field' },
+    $emit: (...args) => emissions.push(args)
+  }
+  for (const [name, method] of Object.entries(component.methods)) vm[name] = method.bind(vm)
+  vm.session = { id: 1 }
+  vm.startedAt = Date.now()
+  vm.schedulePoll = (delay) => timers.push(delay)
+  vm.post = async () => ({ id: 2 })
+  return { vm, component, emissions, timers }
+}
+
+for (const action of ['cancel', 'reset', 'unmount', 'replace']) {
+  test(`ignores an outstanding poll after ${action}`, async () => {
+    const { vm, component, emissions, timers } = await componentInstance()
+    const pending = deferred()
+    vm.fetchState = () => pending.promise
+    const poll = vm.poll()
+
+    if (action === 'cancel') await vm.cancelSession()
+    if (action === 'reset') vm.reset()
+    if (action === 'unmount') component.beforeUnmount.call(vm)
+    if (action === 'replace') await vm.createSession()
+    const expectedEmissions = [...emissions]
+    const expectedTimers = [...timers]
+
+    pending.resolve({ state: 'completed', value: 'qes:old' })
+    await poll
+
+    assert.deepEqual(emissions, expectedEmissions)
+    assert.deepEqual(timers, expectedTimers)
+    assert.notEqual(vm.phase, 'completed')
+  })
+}
+
+for (const stage of ['fetch', 'json']) {
+  test(`ignores a poll cancelled during ${stage}`, async () => {
+    const { vm, emissions, timers } = await componentInstance()
+    const pending = deferred()
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = stage === 'fetch'
+      ? () => pending.promise
+      : async () => ({ ok: true, json: () => pending.promise })
+    try {
+      const poll = vm.poll()
+      await Promise.resolve()
+      vm.reset()
+      pending.resolve(stage === 'fetch'
+        ? { ok: true, json: async () => ({ state: 'completed', value: 'qes:old' }) }
+        : { state: 'completed', value: 'qes:old' })
+      await poll
+      assert.deepEqual(emissions, [])
+      assert.deepEqual(timers, [])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+}
+
+test('does not resurrect a session created after unmount', async () => {
+  const { vm, component, emissions, timers } = await componentInstance()
+  const pending = deferred()
+  vm.post = () => pending.promise
+  const creating = vm.createSession()
+  component.beforeUnmount.call(vm)
+  pending.resolve({ id: 2 })
+  await creating
+  assert.equal(vm.session, null)
+  assert.deepEqual(emissions, [['start']])
+  assert.deepEqual(timers, [])
+})
+
+
+test('accepts the current completion response', async () => {
+  const { vm, emissions, timers } = await componentInstance()
+  vm.fetchState = async () => ({ state: 'completed', value: 'qes:current' })
+  await vm.poll()
+  assert.deepEqual(emissions, [['update:modelValue', 'qes:current'], ['submit']])
+  assert.deepEqual(timers, [])
+  assert.equal(vm.phase, 'completed')
+})
+
+test('ignores a stale request failure without restarting polling', async () => {
+  const { vm, emissions, timers } = await componentInstance()
+  const pending = deferred()
+  vm.fetchState = () => pending.promise.then(() => { throw new Error('network') })
+  const poll = vm.poll()
+  vm.reset()
+  pending.resolve()
+  await poll
+  assert.deepEqual(emissions, [])
+  assert.deepEqual(timers, [])
+  assert.equal(vm.phase, 'idle')
 })
