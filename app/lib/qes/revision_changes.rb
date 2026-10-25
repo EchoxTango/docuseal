@@ -36,11 +36,14 @@ module Qes
         next unless new_object?(field, before)
         # Actions on a field are not timestamp evidence.
         next unless (field.value.keys - %i[FT V T TU TM Ff Kids Type Subtype Rect P F AP AS MK BS Border]).empty?
+        # Widget DocTS nesmí nic kreslit: viditelný vzhled by mohl překrýt podepsaný obsah.
+        next unless invisible_widget?(field)
 
         widgets = (field[:Kids]&.to_a || []).map { |widget| document.deref(widget) }
         next unless widgets.all? do |widget|
           new_object?(widget, before) && widget[:Subtype] == :Widget &&
-            (widget.value.keys - %i[Type Subtype Rect P Parent F AP AS MK BS Border]).empty?
+            (widget.value.keys - %i[Type Subtype Rect P Parent F AP AS MK BS Border]).empty? &&
+            invisible_widget?(widget)
         end
         # A later field must not borrow an older token's ByteRange. Its entire
         # field/widget/appearance graph must already exist in the stamped revision.
@@ -54,6 +57,20 @@ module Qes
         widgets.each { |widget| ignored << [widget.oid, widget.gen] }
       end
       ignored
+    end
+
+    HIDDEN_FLAGS = 2 | 32 # Hidden, NoView
+
+    # Bez /Rect, s nulovou plochou, nebo skrytý příznakem; jinak se widget porovnává
+    # jako běžná změna obsahu.
+    def invisible_widget?(object)
+      return true if (object[:F].to_i & HIDDEN_FLAGS).positive?
+
+      rect = object[:Rect]
+      return object[:AP].nil? if rect.nil?
+
+      x1, y1, x2, y2 = rect.to_a.map(&:to_f)
+      (x2 - x1).abs < 0.01 || (y2 - y1).abs < 0.01
     end
 
     def field_snapshot(document, field)

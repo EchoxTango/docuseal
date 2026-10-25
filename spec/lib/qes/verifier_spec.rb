@@ -242,6 +242,25 @@ RSpec.describe Qes::Verifier do
     expect(Qes::Validator.call(stamped, trust_roots: QesHelpers.trust_roots)[:ok]).to be true
   end
 
+  it 'rejects a visible DocTS widget that paints over signed content' do
+    allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
+    stub_tsa!
+    document = HexaPDF::Document.new(io: StringIO.new(pdf))
+    field = document.acro_form.create_signature_field('Overlay timestamp')
+    widget = field.create_widget(document.pages[0], Rect: [50, 600, 350, 700])
+    appearance = document.add({ Type: :XObject, Subtype: :Form, BBox: [0, 0, 300, 100] })
+    appearance.stream = "1 1 1 rg 0 0 300 100 re f 0 0 0 rg BT /Helv 24 Tf 10 40 Td (Amount: 1 CZK) Tj ET"
+    widget[:AP] = { N: appearance }
+    document.config['signature.signing_handler'][:qes_dts] = Qes::DocTimestamp::Handler
+    output = StringIO.new
+    document.sign(output, signature: field, handler: :qes_dts, tsa_url: 'http://tsa.test',
+                          write_options: { validate: false })
+
+    report = described_class.call(output.string, name: 'overlay-timestamp.pdf')
+    expect(report[:signatures].last).to include(intact: true, tsa_trusted: true)
+    expect(report).to include(verdict: 'invalid', modified: true)
+  end
+
   it 'does not let a new widget borrow a previously trusted timestamp' do
     allow(Qes).to receive(:tsa_trust_roots).and_return([QesHelpers.tsa_root_certificate])
     stub_tsa!
