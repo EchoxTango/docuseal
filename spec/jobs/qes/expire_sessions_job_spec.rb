@@ -14,4 +14,29 @@ RSpec.describe Qes::ExpireSessionsJob do
     expect { described_class.new.perform }.to raise_error(ActiveRecord::StatementInvalid)
     expect(described_class).to have_received(:perform_in)
   end
+  it 'does not overwrite a session completed after the stale query' do
+    session = create(:qes_session, state: 'awaiting_signature', expires_at: 1.minute.ago)
+    stale = QesSession.stale
+    allow(QesSession).to receive(:stale).and_return(stale)
+    allow(stale).to receive(:find_each).and_wrap_original do |_original, &block|
+      QesSession.where(id: session.id).update_all(state: 'completed', completed_at: Time.current)
+      block.call(session)
+    end
+    allow(described_class).to receive(:perform_in)
+
+    described_class.new.perform
+
+    expect(session.reload.state).to eq('completed')
+    expect(session.failure_code).to be_nil
+  end
+
+  it 'expires an active stale session' do
+    session = create(:qes_session, state: 'awaiting_signature', expires_at: 1.minute.ago)
+    allow(described_class).to receive(:perform_in)
+
+    described_class.new.perform
+
+    expect(session.reload.state).to eq('expired')
+    expect(session.failure_code).to eq('expired')
+  end
 end

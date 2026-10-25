@@ -440,4 +440,19 @@ RSpec.describe 'Qes sessions API', type: :request do
     expect(response.parsed_body['error']).to eq('values_changed')
     expect(session.reload.state).not_to eq('completed')
   end
+  it 'does not overwrite completion when a concurrent request fails' do
+    session, _submitter = create_qes_session(token: 'race')
+    session.update!(state: 'awaiting_signature')
+    allow_any_instance_of(Qes::Providers::MobileApp).to receive(:complete!) do
+      QesSession.where(id: session.id).update_all(state: 'completed', completed_at: Time.current)
+      raise Qes::ClientError.new(:signature_invalid)
+    end
+
+    post '/qes/sessions/race/complete', params: { signature: Base64.strict_encode64('bad') }
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(session.reload.state).to eq('completed')
+    expect(session.failure_code).to be_nil
+    expect(session.failed_at).to be_nil
+  end
 end

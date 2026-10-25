@@ -211,10 +211,9 @@ module Qes
     end
 
     def fail_session(error)
-      QesSession.where(id: @session.id).update_all(failure_code: error.code.to_s,
-                                                  failure_message: error.message,
-                                                  failed_at: Time.current,
-                                                  state: 'failed')
+      QesSession.where(id: @session.id).where.not(state: 'completed')
+                .update_all(failure_code: error.code.to_s, failure_message: error.message,
+                            failed_at: Time.current, state: 'failed')
       @session.reload
       Qes.log(@session)
     end
