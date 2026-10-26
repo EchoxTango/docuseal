@@ -41,7 +41,8 @@ module Qes
       end
       last = results.last
       level = qes_results.last ? qes_results.last[:level] : 'none'
-      coverage_valid = last && covered_document?(pdf_bytes, signatures.last, last[:coverage])
+      coverage_valid = last && covered_document?(pdf_bytes, signatures.last, last[:coverage],
+                                                timestamp_ranges: timestamps.map(&:first))
 
       {
         ok: inspection == 'complete' && !pdfium.any? { |signature| signature[:modified] } &&
@@ -98,6 +99,8 @@ module Qes
       result[:signing_time] = signing_time(pkcs7)
       result[:level] = signer_cert ? Qes::CertificateInfo.new(signer_cert).level : 'none'
       result[:intact] = verify_cms(pkcs7, data, trust_roots, sub_filter)
+      # DocTS i podpisové razítko jsou ověřené TSA časy; min je konzervativní
+      # historický čas, nikoli neověřený `signingTime` od podepisujícího.
       evidence_time = if result[:kind] == 'timestamp'
                         Qes::TimestampToken.verified_time(pkcs7, data, at:)
                       else
@@ -249,12 +252,12 @@ module Qes
     end
 
     # Partial ByteRange coverage is acceptable only for a DSS-only tail.
-    def covered_document?(pdf_bytes, signature, coverage)
+    def covered_document?(pdf_bytes, signature, coverage, timestamp_ranges: [])
       return true if coverage == 'full'
       return false unless coverage == 'partial'
 
       range = signature[:ByteRange].value
-      Qes::RevisionChanges.allowed?(pdf_bytes, range[2] + range[3])
+      Qes::RevisionChanges.allowed?(pdf_bytes, range[2] + range[3], timestamp_ranges:)
     end
 
     # Raw byte coverage remains visible even when a DSS-only tail is allowed.
@@ -266,7 +269,7 @@ module Qes
     end
 
     def pdfium_report(pdf_bytes, trusted_certs, trusted_ranges:, allow_dss_changes: false)
-      VerifyPdfSignature.call(StringIO.new(pdf_bytes), trusted_certs,
+      Qes::PdfiumTrust.report(StringIO.new(pdf_bytes), trusted_certs,
                               trusted_ranges:, allow_dss_changes:).map do |signature|
         {
           common_name: signature.common_name,

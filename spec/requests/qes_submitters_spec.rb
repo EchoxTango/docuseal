@@ -21,6 +21,20 @@ RSpec.describe 'QES API submitter completion', type: :request do
     expect(submitter.reload.completed_at).to be_nil
   end
 
+  it 'cannot disable a required QES field through a field update' do
+    field = fields.first
+
+    put "/api/submitters/#{submitter.id}",
+        params: { fields: [{ uuid: field['uuid'], required: false }] }, headers:, as: :json
+    expect(response).to have_http_status(:ok)
+
+    complete_submitter
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.parsed_body['error']).to eq('Required QES signatures are missing')
+    expect(submitter.reload.completed_at).to be_nil
+  end
+
   it 'requires a completed session for every required field' do
     create(:qes_session, :with_values_snapshot, submitter:, field_uuid: fields.first['uuid'], state: 'completed', level: 'ades')
     create(:qes_session, :with_values_snapshot, submitter:, field_uuid: fields.last['uuid'], state: 'awaiting_signature', level: 'ades')
@@ -54,7 +68,9 @@ RSpec.describe 'QES API submitter completion', type: :request do
   end
 
   it 'preserves completion for templates without QES fields' do
-    submission.update!(template_fields: Qes.template_fields(submission).reject { |field| field['type'] == 'qes' })
+    template = submission.template
+    template.update!(fields: template.fields.reject { |field| field['type'] == 'qes' })
+    submission.update!(template_fields: template.reload.fields)
 
     complete_submitter
 
@@ -98,5 +114,22 @@ RSpec.describe 'QES API submitter completion', type: :request do
 
     expect(response).to have_http_status(:unprocessable_content)
     expect(submitter.reload.values[field['uuid']]).to eq('Signed value')
+  end
+
+  it 'resolves field defaults when completing through the API' do
+    template = submission.template
+    template.update!(fields: template.fields.reject { |field| field['type'] == 'qes' })
+    submission.update!(template_fields: template.reload.fields)
+    text = Qes.template_fields(submission).find { |field| field['type'] == 'text' }
+    template.update!(fields: template.fields.map do |field|
+      field['uuid'] == text['uuid'] ? field.merge('default_value' => '{{name}}') : field
+    end)
+    submission.update!(template_fields: template.reload.fields)
+    submitter.update!(values: {}, name: 'Douglas Howell')
+
+    complete_submitter
+
+    expect(response).to have_http_status(:ok)
+    expect(submitter.reload.values[text['uuid']]).to eq('Douglas Howell')
   end
 end

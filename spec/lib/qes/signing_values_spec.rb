@@ -135,7 +135,7 @@ RSpec.describe Qes::SigningValues do
     expect(submitter.values[stamp['uuid']]).to eq('prepared-stamp')
     create(:qes_session, :with_values_snapshot, submitter:, state: 'completed', level: 'ades')
 
-    Submitters::SubmitValues.finalize_values!(submitter)
+    Qes::SigningValues.finalize!(submitter)
     expect(submitter.values[stamp['uuid']]).to eq('prepared-stamp')
   end
 

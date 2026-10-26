@@ -36,7 +36,7 @@ RSpec.describe 'QES signing values', type: :request do
 
   it 'returns 422 values_changed when signed values changed before session creation' do
     create(:qes_session, :with_values_snapshot, submitter:, state: 'completed', level: 'ades')
-    submitter.update!(values: submitter.values.merge(text_field['uuid'] => 'Changed after signing'))
+    submitter.update_columns(values: submitter.values.merge(text_field['uuid'] => 'Changed after signing'))
 
     expect { start_session }.not_to change(QesSession, :count)
 
@@ -50,7 +50,7 @@ RSpec.describe 'QES signing values', type: :request do
     token = response.parsed_body.fetch('token')
     session = QesSession.find(response.parsed_body.fetch('id'))
     create(:qes_session, :with_values_snapshot, submitter:, state: 'completed', level: 'ades')
-    submitter.update!(values: submitter.values.merge(text_field['uuid'] => 'Changed after signing'))
+    submitter.update_columns(values: submitter.values.merge(text_field['uuid'] => 'Changed after signing'))
     expect(Qes::TbsDocument).not_to receive(:build)
 
     prepare_signature(token)
@@ -109,6 +109,21 @@ RSpec.describe 'QES signing values', type: :request do
       expect(response).to have_http_status(:unprocessable_content)
       expect(submitter.reload.values[text_field['uuid']]).to eq('Agreed text')
     end
+  end
+
+  it 'returns the frozen non-QES values to the browser after certificate signing' do
+    submitter.update!(values: { text_field['uuid'] => 'Frozen text' })
+    start_session
+    expect(response).to have_http_status(:created)
+    token = response.parsed_body.fetch('token')
+
+    prepare_signature(token)
+    expect(response).to have_http_status(:ok)
+
+    get "/qes/sessions/#{token}"
+
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body['values']).to eq(text_field['uuid'] => 'Frozen text')
   end
 
   it 'rechecks required values when the certificate arrives' do

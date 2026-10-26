@@ -38,11 +38,6 @@ module Api
 
     # rubocop:disable Metrics/MethodLength
     def update
-      completed = ActiveModel::Type::Boolean.new.cast(submitter_params[:completed])
-      if completed && Qes.missing_required_sessions(@submitter).present?
-        return render json: { error: 'Required QES signatures are missing' }, status: :unprocessable_content
-      end
-
       submission = @submitter.submission
       role = submission.template_submitters.find { |e| e['uuid'] == @submitter.uuid }['name']
 
@@ -60,7 +55,6 @@ module Api
         @submitter.lock!
         @submitter.submission = submission
         assign_submitter_attrs(@submitter, normalized_params)
-        Qes::ValueValidator.call(@submitter.values, @submitter)
 
         Submissions::NormalizeParamUtils.save_default_value_attachments!(new_attachments, [@submitter])
 
@@ -164,13 +158,11 @@ module Api
 
     def maybe_assign_completed_attributes(submitter, attrs)
       completed = ActiveModel::Type::Boolean.new.cast(attrs[:completed])
-      if completed && Qes.missing_required_sessions(submitter).present?
-        raise Submitters::SubmitValues::ValidationError, 'Required QES signatures are missing'
-      end
 
       submitter.completed_at = completed ? Time.current : submitter.completed_at
-
-      Submitters::SubmitValues.finalize_values!(submitter) if completed
+      # Stejná příprava hodnot jako formulář; bez ní API ztratí defaulty,
+      # vzorce, razítko i datum (nález 1).
+      Qes::SigningValues.finalize!(submitter) if completed
 
       submitter
     end

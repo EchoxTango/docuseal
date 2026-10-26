@@ -106,9 +106,9 @@ RSpec.describe Qes::Validator do
       report = described_class.call(pdf, trust_roots: [root])
       expect(report[:signatures].first).to include(intact: true, trusted: false, level: 'qes')
       expect(report[:ok]).to be false
-      expect(VerifyPdfSignature.call(StringIO.new(pdf), []).first)
+      expect(Qes::PdfiumTrust.report(StringIO.new(pdf), []).first)
         .to have_attributes(verified: true, trusted: false)
-      pinned = VerifyPdfSignature.call(StringIO.new(pdf), [leaf]).first
+      pinned = Qes::PdfiumTrust.report(StringIO.new(pdf), [leaf]).first
       expect(pinned).to have_attributes(verified: true, trusted: false)
       expect(pinned.messages.map(&:text)).not_to include(I18n.t('signed_with_trusted_certificate'))
     end
@@ -122,7 +122,7 @@ RSpec.describe Qes::Validator do
     pdf = QesHelpers.signed_pdf(pkcs:)
 
     expect(described_class.call(pdf, trust_roots: [root])[:ok]).to be true
-    expect(VerifyPdfSignature.call(StringIO.new(pdf), []).first)
+    expect(Qes::PdfiumTrust.report(StringIO.new(pdf), []).first)
       .to have_attributes(verified: true, trusted: true)
   end
 
@@ -249,14 +249,14 @@ RSpec.describe Qes::Validator do
 
         travel_to(later) do
           expect(described_class.call(signed, trust_roots: [root])[:ok]).to be true
-          standalone = VerifyPdfSignature.call(StringIO.new(signed), [])
+          standalone = Qes::PdfiumTrust.report(StringIO.new(signed), [])
           expect(standalone.first).to have_attributes(verified: true, trusted: true)
           expect(standalone.any?(&:modified)).to be false
           expect(standalone.first.messages.map(&:text)).to include(I18n.t('signed_with_trusted_certificate'))
 
           allow(Qes).to receive(:tsa_trust_roots).and_return([])
           expect(described_class.call(signed, trust_roots: [root])[:trusted]).to be false
-          expect(VerifyPdfSignature.call(StringIO.new(signed), []).first.trusted).to be false
+          expect(Qes::PdfiumTrust.report(StringIO.new(signed), []).first.trusted).to be false
         end
       end
     end

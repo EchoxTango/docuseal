@@ -22,7 +22,8 @@ RSpec.describe Qes::Ltv do
     [key, cert]
   end
 
-  def issue_crl(issuer, key, revoked: [], last_update: Time.current - 60, next_update: Time.current + 3600)
+  def issue_crl(issuer, key, revoked: [], last_update: Time.current - 60, next_update: Time.current + 3600,
+                extensions: [])
     crl = OpenSSL::X509::CRL.new
     crl.version = 1
     crl.issuer = issuer.subject
@@ -34,6 +35,7 @@ RSpec.describe Qes::Ltv do
       entry.time = Time.current - 60
       crl.add_revoked(entry)
     end
+    extensions.each { |extension| crl.add_extension(extension) }
     crl.sign(key, OpenSSL::Digest.new('SHA256'))
 
     crl
@@ -86,6 +88,36 @@ RSpec.describe Qes::Ltv do
 
       expect(described_class.collect_revocation_data(leaf, chain: [intermediate]))
         .to eq([leaf_crl, root_crl])
+    end
+
+    it 'rejects delta CRLs instead of treating them as complete CRLs' do
+      delta = issue_crl(intermediate, intermediate_key,
+                        extensions: [OpenSSL::X509::Extension.new(
+                          '2.5.29.27', OpenSSL::ASN1::Integer(1).to_der, true
+                        )])
+
+      expect { described_class.validate_crl!(delta, leaf, intermediate) }
+        .to raise_error(Qes::Ltv::FetchError, /Delta CRLs/)
+    end
+
+    it 'rejects CRL numbers that decrease with a newer lastUpdate' do
+      older = issue_crl(intermediate, intermediate_key, last_update: 2.minutes.ago,
+                        extensions: [OpenSSL::X509::Extension.new(
+                          '2.5.29.20', OpenSSL::ASN1::Integer(2).to_der, false
+                        )])
+      newer = issue_crl(intermediate, intermediate_key, last_update: 1.minute.ago,
+                        extensions: [OpenSSL::X509::Extension.new(
+                          '2.5.29.20', OpenSSL::ASN1::Integer(1).to_der, false
+                        )])
+
+      expect { described_class.check_revoked!(leaf, chain: [intermediate], crls: [older, newer]) }
+        .to raise_error(Qes::ClientError) { |error| expect(error.code).to eq(:ltv_unavailable) }
+    end
+
+    it 'returns 422 for a malformed chain instead of raising a server error' do
+      expect { described_class.check_revoked!(leaf, chain: ['not a certificate'],
+                                             crls: [issue_crl(intermediate, intermediate_key)]) }
+        .to raise_error(Qes::ClientError) { |error| expect(error.code).to eq(:invalid_certificate) }
     end
 
     it 'rejects a revoked intermediate even when the leaf is not revoked' do

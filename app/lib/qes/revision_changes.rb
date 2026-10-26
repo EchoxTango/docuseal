@@ -5,6 +5,11 @@ module Qes
   # stream bytes. DSS data and *new* authenticated DocTS fields/widgets are the
   # only exclusions. In particular, a timestamp never authenticates page edits.
   module RevisionChanges
+    # Sentinel, který PDF neumí vyrobit. Obyčejné pole `[:reference, oid, gen]`
+    # koliduje s PDF jménem `[/reference 1 0]`, které HexaPDF načte jako stejný
+    # Ruby `Array` (nález 1.1).
+    REFERENCE_SENTINEL = Object.new.freeze
+
     module_function
 
     def allowed?(bytes, signed_end, timestamp_ranges: [])
@@ -17,10 +22,13 @@ module Qes
       ignored = timestamp_fields(after, before, timestamp_ranges, bytes:)
 
       # The DocTS handler upgrades the catalog to PDF 2.0.
-      version_upgrade = ignored.any? && after.catalog[:Version] == :'2.0'
+      # Verzi smí změnit jen revize, která přinesla DocTS, ne libovolná
+      # pozdější revize (nález 2.9).
+      version_upgrade = ignored.any? && after.catalog[:Version] == :'2.0' &&
+                        timestamp_ranges.any? { |range| range[2] + range[3] == bytes.bytesize }
       before.catalog.delete(:Version) if version_upgrade
       after.catalog.delete(:Version) if version_upgrade
-      snapshot(before) == snapshot(after, ignored:)
+      snapshot(before, ignored:) == snapshot(after, ignored:)
     rescue StandardError => e
       Rails.logger.warn("[qes] revision comparison failed: #{e.class}")
       false
@@ -59,12 +67,17 @@ module Qes
       ignored
     end
 
-    HIDDEN_FLAGS = 2 | 32 # Hidden, NoView
+    HIDDEN_FLAG = 2
+    NO_VIEW_FLAG = 32
+    PRINT_FLAG = 4
 
     # Bez /Rect, s nulovou plochou, nebo skrytý příznakem; jinak se widget porovnává
-    # jako běžná změna obsahu.
+    # jako běžná změna obsahu. `NoView` sám o sobě netiskne: s `Print` se widget
+    # vytiskne, takže nesmí projít jako neviditelný (nález 2.9).
     def invisible_widget?(object)
-      return true if (object[:F].to_i & HIDDEN_FLAGS).positive?
+      flags = object[:F].to_i
+      return true if (flags & HIDDEN_FLAG).positive?
+      return (flags & PRINT_FLAG).zero? if (flags & NO_VIEW_FLAG).positive?
 
       rect = object[:Rect]
       return object[:AP].nil? if rect.nil?
@@ -91,7 +104,13 @@ module Qes
     def snapshot(document, ignored: Set.new)
       objects = {}
       root = normalize(document.catalog, document, objects, ignored, :catalog)
-      [root, objects]
+      info = document.trailer[:Info]
+      info = document.object(info) if info.is_a?(HexaPDF::Reference)
+      info = info.value if info.is_a?(HexaPDF::Object)
+      # Signing legitimně mění `/ModDate`; ostatní změny `/Info` se porovnávají.
+      info = info.except(:ModDate) if ignored.any? && info.is_a?(Hash)
+      info = normalize(info, document, objects, ignored, :info)
+      [root, info, objects]
     end
 
     def normalize(value, document, objects, ignored, context = nil)
@@ -99,11 +118,11 @@ module Qes
       if value.is_a?(HexaPDF::Object)
         if value.indirect?
           key = [value.oid, value.gen]
-          return [:reference, *key] if objects.key?(key)
+          return [REFERENCE_SENTINEL, *key] if objects.key?(key)
 
           objects[key] = nil # Break page/parent and widget/field cycles.
           objects[key] = normalize_object(value, document, objects, ignored, context)
-          return [:reference, *key]
+          return [REFERENCE_SENTINEL, *key]
         end
 
         return normalize_object(value, document, objects, ignored, context)
@@ -122,9 +141,10 @@ module Qes
                           end
           # A writer may introduce an indirect Annots array for the new widget.
           if key == :Annots && value[:Type] == :Page
-            annotations = document.deref(item)
+            annotations = dereference(document, item)
             annotations = annotations.value if annotations.is_a?(HexaPDF::Object)
             next if annotations.is_a?(Array) && annotations.all? do |annotation|
+              annotation = dereference(document, annotation)
               annotation.respond_to?(:oid) && ignored.include?([annotation.oid, annotation.gen])
             end
           end
@@ -134,8 +154,9 @@ module Qes
         end
       when Array
         value.filter_map do |item|
-          if context == :fields && item.respond_to?(:oid) && ignored.include?([item.oid, item.gen])
-            next
+          if context == :fields
+            object = dereference(document, item)
+            next if object.respond_to?(:oid) && ignored.include?([object.oid, object.gen])
           end
 
           # Preserve PDF nulls in ordinary arrays (filter_map would drop nil).
@@ -144,6 +165,10 @@ module Qes
       else
         value
       end
+    end
+
+    def dereference(document, value)
+      value.is_a?(HexaPDF::Reference) ? document.deref(value) : value
     end
 
     def normalize_object(object, document, objects, ignored, context)

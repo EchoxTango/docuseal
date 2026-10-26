@@ -12,7 +12,7 @@ RSpec.describe 'QES views' do
   let(:field) { submitter.submission.template_fields.find { |f| f['type'] == 'qes' } }
 
   let!(:session) do
-    create(:qes_session, submitter:, submission: submitter.submission, account:,
+    create(:qes_session, :with_values_snapshot, submitter:, submission: submitter.submission, account:,
                           field_uuid: field['uuid'], state: 'completed',
                           completed_at: Time.current, level: 'ades',
                           key_location: 'phone_keystore', seal_state: 'applied',

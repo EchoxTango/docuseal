@@ -15,9 +15,9 @@ module Qes
     before_action :load_session
 
     def show
-      return render_qes_error_with(:expired_token, :gone) if @session.expired?
-      return render_qes_error_with(:used_token, :gone) if @session.terminal? && @session.state != 'completed'
       return render json: completed_payload if @session.state == 'completed'
+      return render_qes_error_with(:expired_token, :gone) if @session.expired?
+      return render_qes_error_with(:used_token, :gone) if @session.terminal?
 
       if @session.state == 'awaiting_app'
         Qes::SessionManager.transition!(@session, 'app_opened')
@@ -28,8 +28,8 @@ module Qes
     end
 
     def document
-      return render_qes_error_with(:expired_token, :gone) if @session.expired?
       return render_qes_error_with(:used_token, :gone) if @session.terminal?
+      return render_qes_error_with(:expired_token, :gone) if @session.expired?
       return render_qes_error_with(:wrong_state, :conflict) unless @session.state == 'awaiting_signature'
       return render_qes_error_with(:document_missing, :conflict) unless @session.tbs_document.attached?
 
@@ -39,8 +39,8 @@ module Qes
     end
 
     def certificate
-      return render_qes_error_with(:expired_token, :gone) if @session.expired?
       return render_qes_error_with(:used_token, :gone) if @session.terminal?
+      return render_qes_error_with(:expired_token, :gone) if @session.expired?
 
       certificate_der = decode_certificate(params[:certificate])
       chain = Array(params[:chain]).compact_blank.map { |der| decode_certificate(der) }
@@ -79,8 +79,8 @@ module Qes
     end
 
     def complete
-      return render_qes_error_with(:expired_token, :gone) if @session.expired?
       return render_qes_error_with(:used_token, :gone) if @session.terminal? && @session.state != 'completed'
+      return render_qes_error_with(:expired_token, :gone) if @session.expired?
 
       signature = decode(params[:signature], :signature_invalid)
 
@@ -112,8 +112,8 @@ module Qes
     end
 
     def abort
-      return render_qes_error_with(:expired_token, :gone) if @session.expired?
       return render_qes_error_with(:used_token, :gone) if @session.terminal?
+      return render_qes_error_with(:expired_token, :gone) if @session.expired?
 
       code = params[:code].presence || 'cancelled'
       new_state = code == 'user_cancelled' ? 'cancelled' : 'failed'
@@ -187,7 +187,8 @@ module Qes
         level_required: @session.level_required,
         requires_certificate: @session.state.in?(%w[awaiting_app app_opened]),
         server_url: Qes::Config[:public_base_url].presence || Docuseal.default_url_options[:host],
-        expires_at: @session.expires_at&.utc&.iso8601
+        expires_at: @session.expires_at&.utc&.iso8601,
+        values: Qes::ValueValidator.non_qes_values(@session.submitter.values, @session.submitter)
       }
     end
 
@@ -217,12 +218,13 @@ module Qes
         signing_time: @session.signing_time&.utc&.iso8601,
         validation: @session.validation_report,
         revocation: @session.validation_report&.[]('revocation'),
-        completed_at: @session.completed_at&.utc&.iso8601
+        completed_at: @session.completed_at&.utc&.iso8601,
+        values: Qes::ValueValidator.non_qes_values(@session.submitter.values, @session.submitter)
       }
     end
 
     def fail_session(error)
-      QesSession.where(id: @session.id).where.not(state: 'completed')
+      QesSession.where(id: @session.id, state: Qes::SessionManager::ACTIVE_STATES)
                 .update_all(failure_code: error.code.to_s, failure_message: error.message,
                             failed_at: Time.current, state: 'failed')
       @session.reload

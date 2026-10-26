@@ -105,6 +105,12 @@ RSpec.describe QesSession do
     expect(session.signed_attrs_der).to eq(signed_attrs_der)
   end
 
+  it 'does not expire a completed session after its link expiry' do
+    session = create(:qes_session, state: 'completed', expires_at: 1.minute.ago)
+
+    expect(session.expired?).to be false
+  end
+
   it 'expires a stale session and keeps the token digest' do
     token = Qes::Token.generate
     session = create(:qes_session, token_digest: Qes::Token.digest(token),

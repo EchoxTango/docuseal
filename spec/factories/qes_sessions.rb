@@ -14,7 +14,10 @@ FactoryBot.define do
       after(:create) do |session|
         session.tbs_document.attach(
           io: StringIO.new('%PDF-snapshot'), filename: 'snapshot.pdf', content_type: 'application/pdf',
-          metadata: { qes_values: Qes::ValueValidator.non_qes_values(session.submitter.values, session.submitter) }
+          metadata: {
+            qes_values: Qes::ValueValidator.non_qes_values(session.submitter.values, session.submitter),
+            qes_document_manifest: Qes::TbsDocument.manifest_for(session.submitter.submission)
+          }
         )
       end
     end

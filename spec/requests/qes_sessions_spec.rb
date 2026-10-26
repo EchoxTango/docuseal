@@ -240,6 +240,36 @@ RSpec.describe 'Qes sessions API', type: :request do
     expect(response.parsed_body['revocation']).to eq('not_checked')
   end
 
+  it 'returns a completed session after its link expiry' do
+    session, _submitter = create_qes_session(token: 'completed-expired', expires_at: 1.minute.ago)
+    session.update!(state: 'completed')
+
+    get '/qes/sessions/completed-expired'
+
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body['state']).to eq('completed')
+  end
+
+  it 'returns the completed session instead of starting a new one' do
+    session, submitter = create_qes_session(token: 'already-done')
+    session.tbs_document.attach(
+      io: StringIO.new('%PDF-snapshot'), filename: 'snapshot.pdf', content_type: 'application/pdf',
+      metadata: { qes_values: Qes::ValueValidator.non_qes_values(submitter.values, submitter),
+                  qes_document_manifest: Qes::TbsDocument.manifest_for(submitter.submission) }
+    )
+    session.reload
+
+    session.update!(state: 'completed')
+
+    expect do
+      post "/s/#{submitter.slug}/qes_sessions", params: { field_uuid: session.field_uuid }
+    end.not_to change(QesSession, :count)
+
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body).to include('id' => session.id, 'state' => 'completed',
+                                            'value' => session.value_token)
+  end
+
   it 'returns 410 for an expired token' do
     _session, _submitter = create_qes_session(token: 'expired', expires_at: 1.minute.ago)
 
@@ -711,6 +741,25 @@ RSpec.describe 'Qes sessions API', type: :request do
     expect(response.parsed_body['error']).to eq('values_changed')
     expect(session.reload.state).not_to eq('completed')
   end
+  %w[expired cancelled].each do |terminal_state|
+    it "does not overwrite a #{terminal_state} session when a concurrent request fails" do
+      session, _submitter = create_qes_session(token: "race-#{terminal_state}")
+      session.update!(state: 'awaiting_signature')
+      allow_any_instance_of(Qes::Providers::MobileApp).to receive(:complete!) do
+        QesSession.where(id: session.id).update_all(state: terminal_state)
+        raise Qes::ClientError.new(:signature_invalid)
+      end
+
+      post "/qes/sessions/race-#{terminal_state}/complete",
+           params: { signature: Base64.strict_encode64('bad') }
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(session.reload.state).to eq(terminal_state)
+      expect(session.failure_code).to be_nil
+      expect(session.failed_at).to be_nil
+    end
+  end
+
   it 'does not overwrite completion when a concurrent request fails' do
     session, _submitter = create_qes_session(token: 'race')
     session.update!(state: 'awaiting_signature')

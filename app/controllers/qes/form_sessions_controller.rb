@@ -33,6 +33,12 @@ module Qes
 
       Qes::SigningValues.validate!(@submitter)
 
+      completed = QesSession.completed_for(@submitter, field['uuid'])
+      if completed
+        return render json: { id: completed.id, state: 'completed', value: completed.value_token,
+                             completed: true, expires_at: completed.expires_at&.utc&.iso8601 }
+      end
+
       session = nil
       token = nil
 

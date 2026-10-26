@@ -29,8 +29,8 @@ module Qes
       submission.template_fields = Qes.template_fields(submission)
       required = Set.new
 
-      Submitters::SubmitValues.finalize_values!(submitter, required_field_uuids_acc: required,
-                                                         validate_verification: false, with_stamp:)
+      finalize!(submitter, required_field_uuids_acc: required,
+                 validate_verification: false, with_stamp:)
 
       missing = submission.template_fields.select do |field|
         field['type'] != 'qes' && required.include?(field['uuid']) && submitter.values[field['uuid']].blank?
@@ -43,6 +43,40 @@ module Qes
       raise Qes::ClientError.new(:values_changed, e.message)
     ensure
       submitter.completed_at = completed_at
+    end
+
+    # Stejná příprava pro dokončení i PDF k podpisu. Zůstává v QES vrstvě,
+    # aby `lib/submitters/submit_values.rb` zůstal blízko upstreamu (nález 3.2).
+    def finalize!(submitter, required_field_uuids_acc: nil, **options)
+      if submitter.qes_sessions.completed.exists?
+        Qes::ValueValidator.validate_signed_values!(submitter.values, submitter)
+
+        # Podepsané hodnoty se už nepřepočítávají, ani po změně data či vzorce.
+        if required_field_uuids_acc
+          candidate = submitter.dup
+          candidate.submission = submitter.submission
+          candidate.values = submitter.values.deep_dup
+          Submitters::SubmitValues.maybe_remove_condition_values(candidate, required_field_uuids_acc:)
+        end
+
+        return submitter.values
+      end
+
+      submitter.values = Submitters::SubmitValues.merge_default_values(submitter, **options)
+      submitter.values = Submitters::SubmitValues.maybe_remove_condition_values(
+        submitter, required_field_uuids_acc:
+      )
+
+      formula_values = Submitters::SubmitValues.build_formula_values(submitter)
+
+      if formula_values.present?
+        submitter.values = submitter.values.merge(formula_values)
+        submitter.values = Submitters::SubmitValues.maybe_remove_condition_values(
+          submitter, required_field_uuids_acc:
+        )
+      end
+
+      submitter.values = Submitters::SubmitValues.replace_current_date_placeholders(submitter)
     end
   end
 end

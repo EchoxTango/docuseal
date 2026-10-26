@@ -523,6 +523,7 @@
             :dry-run="dryRun"
             :native-platform="nativePlatform"
             @start="scrollIntoField(currentField)"
+            @update:values="mergeValues"
             @submit="!isSubmitting && submitStep()"
           />
           <InitialsStep
@@ -1709,6 +1710,9 @@ export default {
           return response
         })
       }
+    },
+    mergeValues (values) {
+      Object.assign(this.values, values)
     },
     scrollIntoField (field) {
       if (this.enableScrollIntoField) {

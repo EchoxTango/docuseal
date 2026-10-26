@@ -120,10 +120,10 @@ export default {
     dryRun: { type: Boolean, required: false, default: false },
     nativePlatform: { type: String, required: false, default: '' }
   },
-  emits: ['update:modelValue', 'attached', 'start', 'submit'],
+  emits: ['update:modelValue', 'update:values', 'attached', 'start', 'submit'],
   data() {
     return {
-      phase: 'idle',
+      phase: typeof this.modelValue === 'string' && this.modelValue.startsWith('qes:') ? 'completed' : 'idle',
       session: null,
       error: null,
       restarting: false,
@@ -192,6 +192,13 @@ export default {
         if (!ticket.isCurrent(this.session?.id ?? null)) return
 
         this.session = session
+        if (session.state === 'completed') {
+          this.level = this.field.preferences?.level || this.level
+          this.phase = 'completed'
+          this.$emit('update:modelValue', session.value || this.modelValue)
+          return
+        }
+
         this.phase = 'awaiting_app'
         this.startedAt = Date.now()
         this.schedulePoll(2000)
@@ -223,6 +230,10 @@ export default {
         const state = await this.fetchState(ticket)
         if (!ticket.isCurrent(this.session?.id)) return
         this.backoff = 2000
+        if (state.values && typeof state.values === 'object') {
+          this.$emit('update:values', state.values)
+        }
+        const errorCode = state.error?.code
         const terminal = qesStepTerminalPhase(state.state)
         if (terminal === 'completed') {
           this.stopPolling()
@@ -234,8 +245,16 @@ export default {
         }
         if (terminal) {
           this.stopPolling()
-          this.error = state.error?.code || state.state
+          this.error = errorCode || state.state
           this.phase = terminal
+          return
+        }
+        // `seal_failed` a spol. nechávají session v `awaiting_signature`;
+        // bez tohoto by prohlížeč polloval do timeoutu bez důvodu (nález 2.4).
+        if (errorCode) {
+          this.stopPolling()
+          this.error = errorCode
+          this.phase = 'failed'
           return
         }
       } catch (error) {

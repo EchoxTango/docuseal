@@ -40,7 +40,7 @@ RSpec.describe Qes::Verifier do
 
   it 'returns an indeterminate inspection and invalid verdict on parser failure' do
     signed = pdf
-    allow(VerifyPdfSignature).to receive(:call).and_raise(StandardError, 'parser failed')
+    allow(Qes::PdfiumTrust).to receive(:report).and_raise(StandardError, 'parser failed')
 
     report = described_class.call(signed, name: 'parser-failure.pdf')
 
@@ -51,7 +51,7 @@ RSpec.describe Qes::Verifier do
 
   it 'returns indeterminate when parsers disagree about the signatures' do
     signed = pdf
-    allow(VerifyPdfSignature).to receive(:call).and_return([])
+    allow(Qes::PdfiumTrust).to receive(:report).and_return([])
 
     report = described_class.call(signed, name: 'parser-disagreement.pdf')
 
@@ -193,7 +193,7 @@ RSpec.describe Qes::Verifier do
       expect(report[:signatures].last).to include(intact: true, tsa_trusted: false)
 
       # Totéž musí platit pro výchozí cestu bez trusted_ranges z validátoru.
-      signatures = VerifyPdfSignature.call(StringIO.new(stamped), [])
+      signatures = Qes::PdfiumTrust.report(StringIO.new(stamped), [])
       expect(signatures.map(&:verified)).to all(be true)
       expect(signatures.first.modified).to be true
       expect(signatures.last.tsa_trusted).to be false
@@ -211,7 +211,7 @@ RSpec.describe Qes::Verifier do
     expect(report[:signatures].last).to include(intact: true, tsa_trusted: true)
     expect(Qes::Validator.call(stamped, trust_roots: QesHelpers.trust_roots))
       .to include(ok: false, modified: true)
-    expect(VerifyPdfSignature.call(StringIO.new(stamped), []).any?(&:modified)).to be true
+    expect(Qes::PdfiumTrust.report(StringIO.new(stamped), []).any?(&:modified)).to be true
   end
 
   it 'accepts QES followed only by DSS and trusted DocTS, without a seal' do
@@ -224,7 +224,7 @@ RSpec.describe Qes::Verifier do
     expect(described_class.call(stamped, name: 'lt-with-timestamp.pdf'))
       .to include(verdict: 'valid', modified: false)
     expect(Qes::Validator.call(stamped, trust_roots: QesHelpers.trust_roots)[:ok]).to be true
-    expect(VerifyPdfSignature.call(StringIO.new(stamped), []).any?(&:modified)).to be false
+    expect(Qes::PdfiumTrust.report(StringIO.new(stamped), []).any?(&:modified)).to be false
   end
 
   it 'keeps repeated trusted DocTS and trailing DSS updates valid' do
@@ -325,7 +325,7 @@ RSpec.describe Qes::Verifier do
     expect(report[:verdict]).to eq('valid')
     expect(report[:modified]).to be false
     expect(report[:signatures].last).to include(intact: true, tsa_trusted: true)
-    signatures = VerifyPdfSignature.call(StringIO.new(stamped), [])
+    signatures = Qes::PdfiumTrust.report(StringIO.new(stamped), [])
     expect(signatures.last.tsa_trusted).to be true
     expect(signatures.any?(&:modified)).to be false
 
@@ -334,7 +334,7 @@ RSpec.describe Qes::Verifier do
     expect(report[:intact]).to be true
     expect(report[:verdict]).to eq('invalid')
     expect(report[:modified]).to be true
-    expect(VerifyPdfSignature.call(StringIO.new(changed), []).any?(&:modified)).to be true
+    expect(Qes::PdfiumTrust.report(StringIO.new(changed), []).any?(&:modified)).to be true
 
     forged = QesHelpers.append_timestamp(changed, certificate: QesHelpers.self_signed_tsa_certificate)
     report = described_class.call(forged, name: 'modified-after-trusted-timestamp-and-forged.pdf')

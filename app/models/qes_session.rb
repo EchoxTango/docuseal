@@ -33,6 +33,7 @@
 #  signed_at           :datetime
 #  signing_time        :datetime
 #  embedded_at         :datetime
+#  expired_at          :datetime
 #  validated_at        :datetime
 #  completed_at        :datetime
 #  failed_at           :datetime
@@ -100,7 +101,9 @@ class QesSession < ApplicationRecord
   end
 
   def expired?(at = Time.current)
-    state == 'expired' || expires_at.present? && expires_at <= at
+    return false if state == 'completed'
+
+    state == 'expired' || (expires_at.present? && expires_at <= at)
   end
 
   def certificate

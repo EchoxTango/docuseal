@@ -23,6 +23,11 @@ test('maps API error codes to i18n keys', () => {
   assert.equal(errorKey('unknown_token'), 'qes_error_expired_token')
   assert.equal(errorKey('rate_limited'), 'qes_error_network')
   assert.equal(errorKey('fields_incomplete'), 'qes_error_fields_incomplete')
+  assert.equal(errorKey('seal_failed'), 'qes_error_seal_failed')
+  assert.equal(errorKey('validation_failed'), 'qes_error_validation_failed')
+  assert.equal(errorKey('tsa_unavailable'), 'qes_error_tsa_unavailable')
+  assert.equal(errorKey('values_changed'), 'qes_error_values_changed')
+  assert.equal(errorKey('document_set_changed'), 'qes_error_document_set_changed')
   assert.equal(errorKey('something_new'), 'qes_error_network')
   assert.equal(ERROR_KEYS.not_trusted, 'qes_error_not_trusted')
 })
@@ -91,7 +96,7 @@ function deferred () {
   return { promise, resolve }
 }
 
-async function componentInstance () {
+async function componentInstance (props = {}) {
   const source = readFileSync(new URL('../../app/javascript/submission_form/qes_step.vue', import.meta.url), 'utf8')
   const logicUrl = new URL('../../app/javascript/submission_form/qes_step_logic.mjs', import.meta.url).href
   const script = source.match(/<script>([\s\S]*?)<\/script>/)[1]
@@ -100,8 +105,9 @@ async function componentInstance () {
   const emissions = []
   const timers = []
   const vm = {
-    ...component.data.call({ field: {} }),
+    ...component.data.call({ field: {}, ...props }),
     field: { uuid: 'field' },
+    ...props,
     $emit: (...args) => emissions.push(args)
   }
   for (const [name, method] of Object.entries(component.methods)) vm[name] = method.bind(vm)
@@ -172,6 +178,32 @@ test('does not resurrect a session created after unmount', async () => {
   assert.deepEqual(timers, [])
 })
 
+
+test('starts completed when the field already has a qes token', async () => {
+  const { vm } = await componentInstance({ modelValue: 'qes:7' })
+
+  assert.equal(vm.phase, 'completed')
+})
+
+test('stops polling on a non-terminal failure', async () => {
+  const { vm, timers } = await componentInstance()
+  vm.fetchState = async () => ({ state: 'awaiting_signature', error: { code: 'seal_failed' } })
+
+  await vm.poll()
+
+  assert.equal(vm.phase, 'failed')
+  assert.equal(vm.error, 'seal_failed')
+  assert.deepEqual(timers, [])
+})
+
+test('merges frozen values returned while polling', async () => {
+  const { vm, emissions } = await componentInstance()
+  vm.fetchState = async () => ({ state: 'awaiting_signature', values: { text: 'frozen' } })
+
+  await vm.poll()
+
+  assert.ok(emissions.some(([event, values]) => event === 'update:values' && values.text === 'frozen'))
+})
 
 test('accepts the current completion response', async () => {
   const { vm, emissions, timers } = await componentInstance()

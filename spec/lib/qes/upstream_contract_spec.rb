@@ -13,28 +13,12 @@ RSpec.describe 'Upstream contracts used by the QES fork' do
   let(:pkcs) { QesHelpers.pkcs12 }
 
   describe 'lib/verify_pdf_signature.rb' do
-    it 'keeps SignatureStruct and MessageStruct members' do
-      expect(VerifyPdfSignature::SignatureStruct.members).to include(
-        :messages, :reason, :signing_time, :common_name, :type, :verified, :trusted, :modified
+    it 'keeps the upstream struct members and call signature' do
+      expect(VerifyPdfSignature::SignatureStruct.members).to eq(
+        %i[messages reason signing_time common_name type]
       )
-      expect(VerifyPdfSignature::MessageStruct.members).to include(:text, :status)
-    end
-
-    it 'returns verified/trusted/modified per signature' do
-      pdf = QesHelpers.signed_pdf
-      signature = VerifyPdfSignature.call(StringIO.new(pdf), []).first
-
-      expect(signature).to have_attributes(verified: true, trusted: true, modified: false)
-      expect(signature.messages.map(&:text)).to include(I18n.t('signed_with_trusted_certificate'))
-
-      allow(Qes).to receive(:trust_roots).and_return([])
-      signature = VerifyPdfSignature.call(StringIO.new(pdf), []).first
-
-      expect(signature.type).to eq('ETSI.CAdES.detached')
-      expect(signature.verified).to be true
-      expect(signature.trusted).to be false
-      expect(signature.modified).to be false
-      expect(signature.messages.map(&:status)).to include(:success, :error)
+      expect(VerifyPdfSignature::MessageStruct.members).to eq(%i[text status])
+      expect(VerifyPdfSignature.method(:call).parameters).to eq([%i[req io], %i[req trusted_certs]])
     end
 
     it 'exposes crypto helpers used by Qes::Validator' do
@@ -46,6 +30,31 @@ RSpec.describe 'Upstream contracts used by the QES fork' do
 
       expect(VerifyPdfSignature.verify_contents(pkcs7, data, [])).to be true
       expect(VerifyPdfSignature.signer_certificate(pkcs7)).to be_present
+    end
+  end
+
+  describe 'app/lib/qes/pdfium_trust.rb' do
+    it 'keeps the QES result members' do
+      expect(Qes::PdfiumTrust::Result.members).to include(
+        :common_name, :signing_time, :type, :verified, :trusted, :tsa_trusted, :modified, :messages
+      )
+    end
+
+    it 'returns verified/trusted/modified per signature' do
+      pdf = QesHelpers.signed_pdf
+      signature = Qes::PdfiumTrust.report(StringIO.new(pdf), []).first
+
+      expect(signature).to have_attributes(verified: true, trusted: true, modified: false)
+      expect(signature.messages.map(&:text)).to include(I18n.t('signed_with_trusted_certificate'))
+
+      allow(Qes).to receive(:trust_roots).and_return([])
+      signature = Qes::PdfiumTrust.report(StringIO.new(pdf), []).first
+
+      expect(signature.type).to eq('ETSI.CAdES.detached')
+      expect(signature.verified).to be true
+      expect(signature.trusted).to be false
+      expect(signature.modified).to be false
+      expect(signature.messages.map(&:status)).to include(:success, :error)
     end
   end
 
@@ -115,8 +124,9 @@ RSpec.describe 'Upstream contracts used by the QES fork' do
 
   describe 'lib/submissions/generate_audit_trail.rb' do
     it 'appends the QES audit page for a completed session' do
-      create(:qes_session, submitter:, submission: submitter.submission, account: submitter.account,
-                            field_uuid: field['uuid'], state: 'completed', completed_at: Time.current,
+      create(:qes_session, :with_values_snapshot, submitter:, submission: submitter.submission,
+                            account: submitter.account, field_uuid: field['uuid'],
+                            state: 'completed', completed_at: Time.current, level: 'ades',
                             certificate_info: { 'subject' => 'CN=Jan Novák', 'issuer' => 'CN=Test Root',
                                                 'serial' => '0x1001' },
                             validation_report: { 'intact' => true, 'trusted' => true,

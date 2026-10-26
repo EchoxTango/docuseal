@@ -49,7 +49,9 @@ module Qes
     def signature_time(pkcs7, at: Time.current)
       signed_data = OpenSSL::ASN1.decode(pkcs7.to_der).value[1].value.first
       signer_info = signed_data.value.last.value.first
-      signature = signer_info.value.find { |node| node.is_a?(OpenSSL::ASN1::OctetString) }
+      # `signature` je poslední OctetString v SignerInfo; hledat první by
+      # mohlo chytit hodnotu v signedAttrs (nález 2.9).
+      signature = signer_info.value.reverse.find { |node| node.is_a?(OpenSSL::ASN1::OctetString) }
       unsigned_attrs = signer_info.value.find { |node| node.tag_class == :CONTEXT_SPECIFIC && node.tag == 1 }
       return unless signature && unsigned_attrs
 

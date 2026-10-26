@@ -77,7 +77,7 @@ module Submitters
       submitter.timezone = request.params[:timezone]
 
       required_field_uuids_acc = Set.new
-      finalize_values!(submitter, required_field_uuids_acc:)
+      Qes::SigningValues.finalize!(submitter, required_field_uuids_acc:)
 
       required_field_uuids_acc.each do |uuid|
         next if submitter.values[uuid].present?
@@ -90,35 +90,6 @@ module Submitters
       end
 
       submitter
-    end
-
-    # Stejná příprava pro dokončení i PDF k podpisu.
-    def finalize_values!(submitter, required_field_uuids_acc: nil, **options)
-      if submitter.qes_sessions.completed.exists?
-        Qes::ValueValidator.validate_signed_values!(submitter.values, submitter)
-
-        # Podepsané hodnoty se už nepřepočítávají, ani po změně data či vzorce.
-        if required_field_uuids_acc
-          candidate = submitter.dup
-          candidate.submission = submitter.submission
-          candidate.values = submitter.values.deep_dup
-          maybe_remove_condition_values(candidate, required_field_uuids_acc:)
-        end
-
-        return submitter.values
-      end
-
-      submitter.values = merge_default_values(submitter, **options)
-      submitter.values = maybe_remove_condition_values(submitter, required_field_uuids_acc:)
-
-      formula_values = build_formula_values(submitter)
-
-      if formula_values.present?
-        submitter.values = submitter.values.merge(formula_values)
-        submitter.values = maybe_remove_condition_values(submitter, required_field_uuids_acc:)
-      end
-
-      submitter.values = replace_current_date_placeholders(submitter)
     end
 
     def maybe_set_signature_reason!(values, submitter, params)

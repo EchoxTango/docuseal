@@ -25,9 +25,8 @@ module Qes
       collect_revocation_data(certificate, chain:)
     rescue FetchError => e
       raise ClientError.new(:ltv_unavailable, e.message)
-    rescue OpenSSL::X509::CertificateError
-      # Malformed cert se parsuje až v `CertificateInfo.parse` (422 invalid_certificate).
-      nil
+    rescue OpenSSL::X509::CertificateError => e
+      raise ClientError.new(:invalid_certificate, e.message)
     end
 
     def collect_revocation_data(certificate, chain: [])
@@ -64,6 +63,8 @@ module Qes
           raise FetchError, 'No matching CRL available'
         end
 
+        validate_crl_sequence!(matching)
+
         matching.each do |crl|
           issuer = issuer_for(cert, certs + Qes.trust_roots)
           validate_crl!(crl, cert, issuer)
@@ -74,6 +75,8 @@ module Qes
       end
     rescue FetchError => e
       raise ClientError.new(:ltv_unavailable, e.message)
+    rescue OpenSSL::X509::CertificateError => e
+      raise ClientError.new(:invalid_certificate, e.message)
     end
 
     def collect_crls(certs)
@@ -94,33 +97,46 @@ module Qes
       end
     end
 
-    # CRL DP bývá v certifikátu víckrát (PostSignum); zkusí se všechny.
+    # CRL DP bývá v certifikátu víckrát (PostSignum); zkusí se všechny a použije
+    # se CRL s nejvyšším `crlNumber` (nález 2.7).
     def fetch_first_crl(urls)
-      urls.each do |url|
-        return fetch_crl(url)
+      crls = urls.filter_map do |url|
+        fetch_crl(url)
       rescue FetchError => e
         Rails.logger.warn("[qes] CRL fetch failed: #{e.message}")
+        nil
       end
 
-      raise FetchError, 'No CRL could be fetched'
+      raise FetchError, 'No CRL could be fetched' if crls.empty?
+
+      crls.max_by { |crl| crl_number(crl) || 0 }
     end
 
     def fetch_crl(url)
       uri = URI.parse(url)
+      address = validate_url!(uri)
+      body = +''
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.ipaddr = address if address
+      http.use_ssl = uri.scheme == 'https'
+      http.open_timeout = FETCH_TIMEOUT
+      http.read_timeout = FETCH_TIMEOUT
 
-      validate_url!(uri)
+      http.start do |client|
+        client.request_get(uri.request_uri) do |response|
+          raise FetchError, "CRL fetch failed with status #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+          if response['Content-Length'].to_i > MAX_RESPONSE_BYTES
+            raise FetchError, "CRL response too large (#{response['Content-Length']} B)"
+          end
 
-      response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https',
-                                open_timeout: FETCH_TIMEOUT, read_timeout: FETCH_TIMEOUT) do |http|
-        http.get(uri.request_uri)
+          response.read_body do |chunk|
+            body << chunk
+            raise FetchError, "CRL response too large (#{body.bytesize} B)" if body.bytesize > MAX_RESPONSE_BYTES
+          end
+        end
       end
 
-      raise FetchError, "CRL fetch failed with status #{response.code}" unless response.is_a?(Net::HTTPSuccess)
-      if response.body.to_s.bytesize > MAX_RESPONSE_BYTES
-        raise FetchError, "CRL response too large (#{response.body.bytesize} B)"
-      end
-
-      OpenSSL::X509::CRL.new(response.body)
+      OpenSSL::X509::CRL.new(body)
     rescue OpenSSL::X509::CRLError, URI::InvalidURIError, SocketError, Timeout::Error, SystemCallError, OpenSSL::SSL::SSLError => e
       raise FetchError, "CRL fetch failed: #{e.class}"
     end
@@ -128,20 +144,28 @@ module Qes
     # SSRF ochrana (SPEC § 7.4): URL je z certifikátu, tedy nedůvěryhodný vstup.
     # Host z `QES_LTV_ALLOWED_HOSTS` je explicitně povolený (i http pro testy),
     # jinak se vyžaduje https a veřejná adresa.
+    # Vrací ověřenou IP adresu, na kterou se má spojení připíchnout. Tím se
+    # zavře DNS-rebinding TOCTOU mezi kontrolou a `Net::HTTP.start` (nález 2.9).
     def validate_url!(uri)
       unless %w[http https].include?(uri.scheme)
         raise FetchError, "Unsupported CRL scheme #{uri.scheme.inspect}"
       end
       raise FetchError, 'CRL URL has no host' if uri.host.blank?
-      return if allowed_hosts.any? { |host| host.casecmp?(uri.host) }
 
-      if allowed_hosts.present?
-        raise FetchError, "CRL host #{uri.host.inspect} is not in QES_LTV_ALLOWED_HOSTS"
+      addresses = resolved_addresses(uri.host)
+      raise FetchError, "CRL host #{uri.host.inspect} has no address" if addresses.empty?
+
+      unless allowed_hosts.any? { |host| host.casecmp?(uri.host) }
+        if allowed_hosts.present?
+          raise FetchError, "CRL host #{uri.host.inspect} is not in QES_LTV_ALLOWED_HOSTS"
+        end
+        raise FetchError, "CRL URL must use https (#{uri.host})" unless uri.scheme == 'https'
+        if addresses.any? { |address| private_address?(address) }
+          raise FetchError, "CRL host #{uri.host.inspect} resolves to a private address"
+        end
       end
-      raise FetchError, "CRL URL must use https (#{uri.host})" unless uri.scheme == 'https'
-      if resolved_addresses(uri.host).any? { |address| private_address?(address) }
-        raise FetchError, "CRL host #{uri.host.inspect} resolves to a private address"
-      end
+
+      addresses.first
     end
 
     def allowed_hosts
@@ -180,6 +204,93 @@ module Qes
              crl.last_update <= now + CLOCK_SKEW && crl.next_update >= now - CLOCK_SKEW
         raise FetchError, 'CRL is outside its validity period'
       end
+
+      validate_crl_scope!(crl, cert)
+    end
+
+    # Delta CRL by neměl projít jako plná CRL a IDP omezuje rozsah revokace
+    # (nález 2.7). Neznámý rozsah je fail-closed.
+    def validate_crl_scope!(crl, cert)
+      raise FetchError, 'Delta CRLs are not supported' if crl_extension(crl, '2.5.29.27', 'deltaCRL')
+
+      value = crl_extension(crl, '2.5.29.28', 'issuingDistributionPoint')
+      return if value.blank?
+
+      sequence = OpenSSL::ASN1.decode(value)
+      raise FetchError, 'Invalid CRL distribution point scope' unless sequence.is_a?(OpenSSL::ASN1::Sequence)
+
+      sequence.value.each do |node|
+        next unless node.is_a?(OpenSSL::ASN1::ASN1Data)
+
+        case node.tag
+        when 0
+          names = asn1_strings(node)
+          if (names & crl_urls(cert)).empty?
+            raise FetchError, 'CRL distribution point does not match certificate'
+          end
+        when 1
+          raise FetchError, 'CRL only contains CA certificates' if node.value && !certificate_authority?(cert)
+        when 2
+          raise FetchError, 'CRL only contains user certificates' if node.value && certificate_authority?(cert)
+        when 3
+          raise FetchError, 'CRL reason scope is not supported'
+        when 4
+          raise FetchError, 'Indirect CRLs are not supported' if node.value
+        when 5
+          raise FetchError, 'CRL only contains attribute certificates' if node.value
+        end
+      end
+    rescue OpenSSL::ASN1::ASN1Error
+      raise FetchError, 'Invalid CRL distribution point scope'
+    end
+
+    # Monotónie `crlNumber` mezi CRL stejného issuera: novější `lastUpdate`
+    # nesmí mít nižší číslo (nález 2.7). Chybějící číslo se přeskočí, protože
+    # starší testovací CRL číslo nemají.
+    def validate_crl_sequence!(crls)
+      numbered = crls.select { |crl| crl_number(crl) }
+                     .sort_by { |crl| crl.last_update || Time.at(0) }
+
+      numbered.each_cons(2) do |older, newer|
+        raise FetchError, 'CRL numbers are not monotonic' if crl_number(newer) < crl_number(older)
+      end
+    end
+
+    def crl_extension(crl, oid, name)
+      extension = crl.extensions.find { |ext| ext.oid == oid || ext.oid == name }
+      extension&.value_der
+    end
+
+    def crl_number(crl)
+      value = crl_extension(crl, '2.5.29.20', 'crlNumber')
+      return if value.blank?
+
+      OpenSSL::ASN1.decode(value).value
+    rescue OpenSSL::ASN1::ASN1Error
+      nil
+    end
+
+    def asn1_strings(node)
+      value = node.respond_to?(:value) ? node.value : nil
+
+      if node.is_a?(OpenSSL::ASN1::IA5String) || value.is_a?(String)
+        [value]
+      elsif value.is_a?(Array)
+        value.flat_map { |child| asn1_strings(child) }
+      else
+        []
+      end
+    end
+
+    def certificate_authority?(cert)
+      value = cert.extensions.find { |ext| ext.oid == '2.5.29.19' || ext.oid == 'basicConstraints' }&.value_der
+      return false if value.blank?
+
+      sequence = OpenSSL::ASN1.decode(value)
+      sequence.is_a?(OpenSSL::ASN1::Sequence) &&
+        sequence.value.any? { |item| item.is_a?(OpenSSL::ASN1::Boolean) && item.value }
+    rescue OpenSSL::ASN1::ASN1Error
+      false
     end
 
     def crl_urls(cert)

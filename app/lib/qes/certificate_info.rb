@@ -36,7 +36,7 @@ module Qes
         next unless statement.is_a?(OpenSSL::ASN1::Sequence)
 
         oid = statement.value.first
-        QC_STATEMENT_NAMES[oid&.value]
+        QC_STATEMENT_NAMES[oid.value] if oid.respond_to?(:value)
       end
     rescue OpenSSL::ASN1::ASN1Error
       []
